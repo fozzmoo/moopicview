@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+var cliMode = false
 var jwtSecret = []byte("supersecret123changeinprod")
 
 type Claims struct {
@@ -30,10 +31,29 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+func getDBURL() string {
+	if cliMode {
+		dbURL := os.Getenv("CLI_DATABASE_URL")
+		if dbURL != "" {
+			return dbURL
+		}
+	}
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		return dbURL
+	}
+	if cliMode {
+		return "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
+	}
+	return "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
+}
+
 func main() {
+
 	godotenv.Load()
 
 	if len(os.Args) > 1 && os.Args[1] == "scan" {
+		cliMode = true
 		scanPhotos()
 		return
 	}
@@ -179,13 +199,7 @@ func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func scanPhotos() {
-	dbURL := os.Getenv("CLI_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
-	}
+	dbURL := getDBURL()
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Println("Scan DB error:", err)
@@ -249,14 +263,7 @@ func scanPhotos() {
 }
 
 func photosHandler(w http.ResponseWriter, r *http.Request) {
-	dbURL := os.Getenv("CLI_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
-	}
-	db, err := sql.Open("postgres", dbURL)
+	db, err := sql.Open("postgres", getDBURL())
 	if err != nil {
 		http.Error(w, "DB error", http.StatusInternalServerError)
 		return
@@ -293,14 +300,7 @@ func photoContentHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	dbURL := os.Getenv("CLI_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
-	}
-	db, _ := sql.Open("postgres", dbURL)
+	db, _ := sql.Open("postgres", getDBURL())
 	defer db.Close()
 
 	var filepathStr string
@@ -331,14 +331,7 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	dbURL := os.Getenv("CLI_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
-	}
-	db, _ := sql.Open("postgres", dbURL)
+	db, _ := sql.Open("postgres", getDBURL())
 	defer db.Close()
 
 	var photo struct {

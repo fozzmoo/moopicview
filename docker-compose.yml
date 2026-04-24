@@ -8,8 +8,6 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable
-    extra_hosts:
-      - "db:host-gateway"
     volumes:
       - /unas:/unas:ro
     depends_on:
@@ -24,7 +22,7 @@ services:
       POSTGRES_USER: moopicview
       POSTGRES_PASSWORD: moopicview123
     ports:
-      - "5432:5432"
+      - "7432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
