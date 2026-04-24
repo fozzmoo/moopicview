@@ -1,27 +1,33 @@
-version: '3.8'
-
 services:
   app:
     build: .
+    container_name: moopicview
     ports:
-      - "8080:8080"
+      - "8787:8080"
+    env_file:
+      - .env
     environment:
-      - DATABASE_URL=postgres://moopicview:password@db:5432/moopicview?sslmode=disable
-      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
-      - PHOTO_ROOT=/unas/images
+      - DATABASE_URL=postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable
+    extra_hosts:
+      - "db:host-gateway"
     volumes:
       - /unas:/unas:ro
     depends_on:
       - db
+    restart: unless-stopped
 
   db:
-    image: postgres:16
+    image: docker.io/library/postgres:16-alpine
+    container_name: moopicview_db
     environment:
       POSTGRES_DB: moopicview
       POSTGRES_USER: moopicview
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: moopicview123
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
   postgres_data:

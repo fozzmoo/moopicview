@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Browse from './pages/Browse';
 import PhotoView from './pages/PhotoView';
 import AdminDashboard from './pages/AdminDashboard';
+import Account from './pages/Account';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import './index.css';
 
@@ -34,6 +35,11 @@ function App() {
             <Route path="/admin" element={
               <ProtectedRoute>
                 <AdminDashboard />
+              </ProtectedRoute>
+            } />
+            <Route path="/account" element={
+              <ProtectedRoute>
+                <Account />
               </ProtectedRoute>
             } />
             <Route path="/" element={<Navigate to="/browse" />} />

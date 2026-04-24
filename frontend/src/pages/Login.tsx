@@ -1,20 +1,27 @@
 import { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
 import { LogIn } from 'lucide-react';
 
 export default function Login() {
   const { login } = useAuth();
+  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
+    console.log('Login submitted with', email);
     e.preventDefault();
     setIsLoading(true);
+    setError('');
     try {
       await login(email, password);
-    } catch (error) {
-      console.error('Login failed', error);
+      navigate('/browse');
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setError(err.response?.data || 'Login failed. Try admin@fozzilinymoo.org / admin123');
     }
     setIsLoading(false);
   };
@@ -49,10 +56,11 @@ export default function Login() {
                 required
               />
             </div>
+            {error && <div className="text-red-400 text-sm p-3 bg-red-950/50 rounded-lg">{error}</div>}
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-violet-600 hover:bg-violet-700 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+              className="w-full bg-violet-600 hover:bg-violet-700 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-70"
             >
               <LogIn className="w-5 h-5" />
               {isLoading ? 'Signing in...' : 'Sign in'}
