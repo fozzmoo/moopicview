@@ -72,6 +72,8 @@ func main() {
 	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
+	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
+	r.HandleFunc("/api/browse", browseHandler).Methods("GET")
 	r.HandleFunc("/api/scan", scanHandler).Methods("POST")
 	r.HandleFunc("/api/health", healthHandler).Methods("GET")
 
@@ -134,6 +136,109 @@ func spaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.FileServer(http.Dir("frontend/dist")).ServeHTTP(w, r)
+}
+
+func collectionsHandler(w http.ResponseWriter, r *http.Request) {
+	rootsStr := os.Getenv("PHOTO_ROOTS")
+	if rootsStr == "" {
+		rootsStr = "digital:/unas/images"
+	}
+	rootEntries := strings.Split(rootsStr, ",")
+
+	var collections []map[string]interface{}
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	for _, entry := range rootEntries {
+		entry = strings.TrimSpace(entry)
+		parts := strings.SplitN(entry, ":", 2)
+		collectionType := "digital"
+		path := ""
+		if len(parts) == 2 {
+			collectionType = strings.TrimSpace(parts[0])
+			path = strings.TrimSpace(parts[1])
+		} else {
+			path = strings.TrimSpace(parts[0])
+		}
+
+		// Count photos in this collection
+		var count int
+		db.QueryRow("SELECT COUNT(*) FROM photos WHERE collection = $1", collectionType).Scan(&count)
+
+		collections = append(collections, map[string]interface{}{
+			"type":  collectionType,
+			"path": path,
+			"count": count,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(collections)
+}
+
+func browseHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Get all photos in this directory
+	rows, _ := db.Query(`
+		SELECT id, filename, collection, photo_date::text, date_precision
+		FROM photos WHERE filepath LIKE $1 ESCAPE '/'
+		ORDER BY filename
+	`, path+"%")
+	defer rows.Close()
+
+	var photos []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var filename, collection, photoDate, datePrecision string
+		rows.Scan(&id, &filename, &collection, &photoDate, &datePrecision)
+		// Only include direct children of this directory
+		if !strings.Contains(strings.TrimPrefix(photoDate, path), "/") {
+			photos = append(photos, map[string]interface{}{
+				"id":             id,
+				"filename":       filename,
+				"collection":     collection,
+				"photo_date":     photoDate,
+				"date_precision": datePrecision,
+				"url":            fmt.Sprintf("/api/photos/%d/content", id),
+			})
+		}
+	}
+
+	// Find subdirectories by looking at unique parent directories
+	dirMap := make(map[string]bool)
+	for _, photo := range photos {
+		relativePath := strings.TrimPrefix(filepath.Dir(photo["filename"].(string)), path)
+		relativePath = strings.TrimLeft(relativePath, "/")
+		if relativePath != "" && relativePath != photo["filename"].(string) {
+			parts := strings.Split(relativePath, "/")
+			if len(parts) > 0 && parts[0] != "" {
+				dirMap[parts[0]] = true
+			}
+		}
+	}
+
+	var directories []map[string]interface{}
+	for dir := range dirMap {
+		directories = append(directories, map[string]interface{}{
+			"name":  dir,
+			"path":  filepath.Join(path, dir),
+			"type":  "directory",
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"directories": directories,
+		"photos":      photos,
+	})
 }
 
 func changePasswordHandler(w http.ResponseWriter, r *http.Request) {

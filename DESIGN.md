@@ -118,7 +118,11 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 ## 6. Key Features
 
 ### User Features
-- **Browse**: Tree or grid view of collections (Digital / Scanned by year/month)
+- **Browse**: Hierarchical navigation through collections
+  - Level 1: Collections (from PHOTO_ROOTS: Digital, Scanned)
+  - Level 2: Years (derived from directories, e.g., 2017, 2024)
+  - Level 3: Event/folder names (e.g., 20170625-FortBuenaVentura, 20240404)
+  - Level 4: Photo grid in each folder
 - **Search**: By filename, description, date (supports partial dates), tags (full-text where possible)
 - **View & Download**: Lightbox viewer with EXIF if available, download button
 - **Comment**: Threaded comments per photo
@@ -126,7 +130,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - **Propose Edit**: Suggest changes to description, photo date, or date precision; notifies admin
 - **Photo Date Management**:
   - Digital photos: Auto-extract from EXIF or directory name (e.g., `20170625-FortBuenaVentura`)
-  - Scanned photos: Manual entry with precision control (year, year-month, year-month-day, or unknown)
+  - Scanned photos: Auto-extract from filename patterns, manual entry for unknown dates
   - Admins can edit dates; users can propose date changes
 
 ### Admin Features
@@ -140,6 +144,34 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - On startup: Scan directories specified in `PHOTO_ROOTS` recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
 - Thumbnail generation (optional, stored alongside or in cache dir)
+
+### Hierarchical Collection Navigation
+
+**Navigation Levels:**
+1. **Collections** (`GET /api/collections`):
+   - Lists all collection types from `PHOTO_ROOTS` (e.g., "Digital", "Scanned")
+   - Each shows total photo count
+   - UI: Card-based or list view
+
+2. **Years** (`GET /api/browse?path=/unas/images/digital_photos`):
+   - Scans DB for unique year directories under collection path
+   - Lists years (2017, 2018, 2024) with photo counts
+   - Derived from directory structure: `/YYYY/YYYYMMDD-*`
+
+3. **Event Folders** (`GET /api/browse?path=/unas/images/digital_photos/2017`):
+   - Lists event/folder names (20170625-FortBuenaVentura) with photo counts
+   - Extracted from YYYYMMDD-* pattern
+
+4. **Photos** (`GET /api/browse?path=/unas/images/digital_photos/2017/20170625-FortBuenaVentura`):
+   - Displays photo grid for this specific folder
+   - Supports pagination/infinite scroll
+   - Clicking opens photo viewer
+
+**URL Structure:**
+- `/browse` → Collections list
+- `/browse?path=/unas/images/digital_photos` → Years
+- `/browse?path=/unas/images/digital_photos/2017` → Folders
+- `/browse?path=/unas/images/digital_photos/2017/20170625-FortBuenaVentura` → Photos
 
 ### PHOTO_ROOTS Configuration
 
@@ -201,6 +233,10 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - `POST /api/auth/google`
 - `POST /api/auth/request-access`
 - `POST /api/auth/reset-password`
+
+**Collections & Browse (Hierarchical Navigation):**
+- `GET /api/collections` (list all collections with photo counts from PHOTO_ROOTS)
+- `GET /api/browse?path=/path/to/dir` (returns subdirectories and photos in given path)
 
 **Photos:**
 - `GET /api/photos` (search, pagination, filters)
