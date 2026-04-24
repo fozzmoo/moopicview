@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
+	"github.com/rwcarlsen/goexif/exif"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -161,13 +163,28 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 			path = strings.TrimSpace(parts[0])
 		}
 
-		// Count photos in this collection
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM photos WHERE collection = $1", collectionType).Scan(&count)
+	// Count photos in this collection using the path as prefix
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM photos WHERE filepath LIKE $1 ESCAPE '/'", path+"%").Scan(&count)
+	if err != nil {
+		log.Printf("Count query error for %s: %v", path, err)
+		count = 0
+	}
+
+
+		// Extract the root collection name from path for display
+		pathParts := strings.Split(path, "/")
+		displayName := ""
+		if len(pathParts) > 0 {
+			displayName = pathParts[len(pathParts)-1]
+		} else {
+			displayName = collectionType
+		}
 
 		collections = append(collections, map[string]interface{}{
 			"type":  collectionType,
 			"path": path,
+			"name": displayName,
 			"count": count,
 		})
 	}
@@ -186,21 +203,32 @@ func browseHandler(w http.ResponseWriter, r *http.Request) {
 	db, _ := sql.Open("postgres", getDBURL())
 	defer db.Close()
 
-	// Get all photos in this directory
+	// Find all photos in this directory (direct children only, not subdirectories)
 	rows, _ := db.Query(`
-		SELECT id, filename, collection, photo_date::text, date_precision
-		FROM photos WHERE filepath LIKE $1 ESCAPE '/'
+		SELECT id, filepath, filename, collection, photo_date::text, date_precision
+		FROM photos WHERE filepath LIKE $1 ESCAPE '/' AND filepath NOT LIKE $2 ESCAPE '/'
 		ORDER BY filename
-	`, path+"%")
+	`, path+"/%", path+"/%/%")
 	defer rows.Close()
 
 	var photos []map[string]interface{}
+	directoriesSet := make(map[string]bool)
+
 	for rows.Next() {
 		var id int
-		var filename, collection, photoDate, datePrecision string
-		rows.Scan(&id, &filename, &collection, &photoDate, &datePrecision)
-		// Only include direct children of this directory
-		if !strings.Contains(strings.TrimPrefix(photoDate, path), "/") {
+		var filepathStr, filename, collection, photoDate, datePrecision string
+		rows.Scan(&id, &filepathStr, &filename, &collection, &photoDate, &datePrecision)
+
+		// Extract the directory name immediately following the base path
+		relativePath := strings.TrimPrefix(filepathStr, path)
+		relativePath = strings.TrimLeft(relativePath, "/")
+		pathParts := strings.Split(relativePath, "/")
+
+		// First part after base path is a subdirectory
+		if len(pathParts) > 1 {
+			directoriesSet[pathParts[0]] = true
+		} else if len(pathParts) == 1 {
+			// This is a direct child photo
 			photos = append(photos, map[string]interface{}{
 				"id":             id,
 				"filename":       filename,
@@ -211,22 +239,11 @@ func browseHandler(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	rows.Close()
 
-	// Find subdirectories by looking at unique parent directories
-	dirMap := make(map[string]bool)
-	for _, photo := range photos {
-		relativePath := strings.TrimPrefix(filepath.Dir(photo["filename"].(string)), path)
-		relativePath = strings.TrimLeft(relativePath, "/")
-		if relativePath != "" && relativePath != photo["filename"].(string) {
-			parts := strings.Split(relativePath, "/")
-			if len(parts) > 0 && parts[0] != "" {
-				dirMap[parts[0]] = true
-			}
-		}
-	}
-
+	// Convert set to sorted slice
 	var directories []map[string]interface{}
-	for dir := range dirMap {
+	for dir := range directoriesSet {
 		directories = append(directories, map[string]interface{}{
 			"name":  dir,
 			"path":  filepath.Join(path, dir),
@@ -234,10 +251,16 @@ func browseHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Sort directories alphabetically
+	sort.Slice(directories, func(i, j int) bool {
+		return directories[i]["name"].(string) < directories[j]["name"].(string)
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"directories": directories,
 		"photos":      photos,
+		"currentPath": path,
 	})
 }
 
@@ -380,12 +403,19 @@ func scanPhotos() {
 				var dateSource string = "unknown"
 
 				if photoType == "digital" {
-					// Try to extract date from parent directory name
-					parentDir := filepath.Base(filepath.Dir(fullPath))
-					if date, precision, source, ok := extractDateFromDirName(parentDir); ok {
+					// Primary: EXIF date
+					if date, precision, ok := extractExifDate(fullPath); ok {
 						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
 						datePrecision = precision
-						dateSource = source
+						dateSource = "exif"
+					} else {
+						// Fallback: directory name
+						parentDir := filepath.Base(filepath.Dir(fullPath))
+						if date, precision, source, ok := extractDateFromDirName(parentDir); ok {
+							photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+							datePrecision = precision
+							dateSource = source
+						}
 					}
 				} else if photoType == "scanned" {
 					// For scanned photos, try to extract date from filename
@@ -415,6 +445,25 @@ func scanPhotos() {
 	log.Println("Scan complete.")
 }
 
+func extractExifDate(filePath string) (time.Time, string, bool) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	defer f.Close()
+
+	x, err := exif.Decode(f)
+	if err != nil {
+		return time.Time{}, "", false
+	}
+
+	dateTime, err := x.DateTime(exif.DateTimeOriginalTag)
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	return dateTime, "exact", true
+}
+
 func extractDateFromDirName(dirName string) (time.Time, string, string, bool) {
 	// Try to match YYYY-MMDD pattern (e.g., 1994-1216-LoganTemple)
 	re := regexp.MustCompile(`^(\d{4})-(\d{2})(\d{2})`)
@@ -426,6 +475,44 @@ func extractDateFromDirName(dirName string) (time.Time, string, string, bool) {
 		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
 			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "filename", true
 		}
+	}
+
+	// Try to match YYYY-MM- pattern (e.g., 1994-12-ChristineDoran)
+	re2 := regexp.MustCompile(`^(\d{4})-(\d{2})-`)
+	matches2 := re2.FindStringSubmatch(dirName)
+	if len(matches2) == 3 {
+		year, _ := strconv.Atoi(matches2[1])
+		month, _ := strconv.Atoi(matches2[2])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 {
+			return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC), "month", "filename", true
+		}
+	}
+
+	// Try to match YYYY- pattern (e.g., 1989-06-HyrumParty)
+	re3 := regexp.MustCompile(`^(\d{4})-[^0-9]`)
+	matches3 := re3.FindStringSubmatch(dirName)
+	if len(matches3) == 2 {
+		year, _ := strconv.Atoi(matches3[1])
+		if year >= 1900 && year <= 2100 {
+			return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), "year", "filename", true
+		}
+	}
+
+	// Try to match YYYYMMDD pattern at start (directory names, e.g., 20170625-FortBuenaVentura)
+	re4 := regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})`)
+	matches4 := re4.FindStringSubmatch(dirName)
+	if len(matches4) == 4 {
+		year, _ := strconv.Atoi(matches4[1])
+		month, _ := strconv.Atoi(matches4[2])
+		day, _ := strconv.Atoi(matches4[3])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "directory", true
+		}
+	}
+
+	return time.Time{}, "unknown", "unknown", false
+}
+
 	}
 
 	// Try to match YYYY-MM- pattern (e.g., 1994-12-ChristineDoran-LoganTemple)

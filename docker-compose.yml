@@ -8,6 +8,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable
+    networks:
+      - default
     volumes:
       - /unas:/unas:ro
     depends_on:
