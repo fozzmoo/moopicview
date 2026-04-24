@@ -63,15 +63,19 @@ users (id, email, password_hash, name, google_id, role, approved, created_at)
 account_requests (id, email, name, message, status, reviewed_by, reviewed_at)
 
 photos (
-  id, 
-  filepath, 
-  filename, 
+  id,
+  filepath,
+  filename,
   collection, -- 'digital' or 'scanned'
-  scan_date, 
-  description, 
-  original_date, 
-  width, height, 
-  imported_at
+  scan_date DATE, -- when photo was scanned/imported (less useful for content)
+  photo_date DATE, -- actual date photo was taken (nullable, for digital photos from EXIF/directory)
+  date_precision VARCHAR(10), -- 'exact', 'month', 'year', 'unknown' (for scanned photos with partial dates)
+  date_source VARCHAR(20), -- 'exif', 'directory', 'manual', 'estimated', 'unknown'
+  description TEXT,
+  original_date TIMESTAMP, -- from EXIF full timestamp
+  width INTEGER,
+  height INTEGER,
+  imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 
 tags (id, name) -- global shared tags
@@ -115,11 +119,15 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 
 ### User Features
 - **Browse**: Tree or grid view of collections (Digital / Scanned by year/month)
-- **Search**: By filename, description, date, tags (full-text where possible)
+- **Search**: By filename, description, date (supports partial dates), tags (full-text where possible)
 - **View & Download**: Lightbox viewer with EXIF if available, download button
 - **Comment**: Threaded comments per photo
 - **Tag**: Add/remove shared global tags
-- **Propose Edit**: Suggest changes to description or date; notifies admin
+- **Propose Edit**: Suggest changes to description, photo date, or date precision; notifies admin
+- **Photo Date Management**:
+  - Digital photos: Auto-extract from EXIF or directory name (e.g., `20170625-FortBuenaVentura`)
+  - Scanned photos: Manual entry with precision control (year, year-month, year-month-day, or unknown)
+  - Admins can edit dates; users can propose date changes
 
 ### Admin Features
 - Manage users and pending account requests
@@ -132,6 +140,29 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - On startup: Scan both directories recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
 - Thumbnail generation (optional, stored alongside or in cache dir)
+
+### Photo Date Handling
+
+**Digital Photos:**
+- Extract date from EXIF metadata (preferred)
+- Fallback to directory name parsing (e.g., `20170625-FortBuenaVentura` → 2017-06-25)
+- Store in `photo_date` with `date_precision='exact'` and `date_source='exif'` or `'directory'`
+- `scan_date` set to import time
+
+**Scanned Photos:**
+- `scan_date` set to import time (when the physical photo was scanned)
+- `photo_date` initially NULL, `date_precision='unknown'`, `date_source='unknown'`
+- Admins (or users via proposed edit) can set:
+  - Year only → `photo_date=YYYY-01-01`, `date_precision='year'`, `date_source='manual'`
+  - Year+Month → `photo_date=YYYY-MM-01`, `date_precision='month'`, `date_source='manual'`
+  - Full date → `photo_date=YYYY-MM-DD`, `date_precision='exact'`, `date_source='manual'`
+  - Leave unknown → `photo_date=NULL`, `date_precision='unknown'`
+
+**Date Display:**
+- Exact: "June 15, 2017"
+- Month: "June 2017"
+- Year: "2017"
+- Unknown: "Unknown date"
 
 ## 7. API Design (Go)
 
