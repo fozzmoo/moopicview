@@ -162,8 +162,9 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 **Date extraction for scanned photos:**
 - Attempts to extract date from filename using these patterns (in order):
   - `YYYY-MMDD-` → exact date (e.g., `1994-1216-LoganTemple` → 1994-12-16, exact)
-  - `YYYY-MM-` → month precision (e.g., `1994-12-ChristineDoran` or `1989-06-HyrumParty` → YYYY-06-01, month)
-  - `YYYY-` (with non-digit after) → year precision (e.g., `1994-ChristineBridalPhoto` → YYYY-01-01, year)
+  - `YYYY-MM-` → month precision (e.g., `1994-12-ChristineDoran` → 1994-12-01, month)
+  - `YYYY-` (with digit after) → month precision (e.g., `1989-06-HyrumParty` → 1989-06-01, month)
+  - `YYYY-` (with non-digit after) → year precision (e.g., `1994-ChristineBridalPhoto` → 1994-01-01, year)
 - If no pattern matches, date remains unknown
 
 **Scanned photos:**
