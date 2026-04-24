@@ -277,13 +277,19 @@ func scanPhotos() {
 				if photoType == "digital" {
 					// Try to extract date from parent directory name
 					parentDir := filepath.Base(filepath.Dir(fullPath))
-					if date, ok := extractDateFromDirName(parentDir); ok {
+					if date, precision, source, ok := extractDateFromDirName(parentDir); ok {
 						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
-						datePrecision = "exact"
-						dateSource = "directory"
+						datePrecision = precision
+						dateSource = source
+					}
+				} else if photoType == "scanned" {
+					// For scanned photos, try to extract date from filename
+					if date, precision, source, ok := extractDateFromDirName(name); ok {
+						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+						datePrecision = precision
+						dateSource = source
 					}
 				}
-				// For scanned photos, leave photo_date NULL with unknown precision
 
 				_, err = db.Exec(`
 					INSERT INTO photos (filepath, filename, collection, scan_date, photo_date, date_precision, date_source, description)
@@ -293,7 +299,7 @@ func scanPhotos() {
 						scan_date = CURRENT_DATE
 				`, fullPath, name, photoType, photoDate, datePrecision, dateSource, "Scanned photo")
 				if err == nil {
-					log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s)", name, photoType, photoDate.String, datePrecision)
+					log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s, source=%s)", name, photoType, photoDate.String, datePrecision, dateSource)
 				} else {
 					log.Printf("Error inserting %s: %v", fullPath, err)
 				}
@@ -304,19 +310,64 @@ func scanPhotos() {
 	log.Println("Scan complete.")
 }
 
-func extractDateFromDirName(dirName string) (time.Time, bool) {
-	// Try to match YYYYMMDD pattern at start
-	re := regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})`)
+func extractDateFromDirName(dirName string) (time.Time, string, string, bool) {
+	// Try to match YYYY-MMDD pattern (e.g., 1994-1216-LoganTemple)
+	re := regexp.MustCompile(`^(\d{4})-(\d{2})(\d{2})`)
 	matches := re.FindStringSubmatch(dirName)
 	if len(matches) == 4 {
 		year, _ := strconv.Atoi(matches[1])
 		month, _ := strconv.Atoi(matches[2])
 		day, _ := strconv.Atoi(matches[3])
 		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
-			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), true
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "filename", true
 		}
 	}
-	return time.Time{}, false
+
+	// Try to match YYYY-MM- pattern (e.g., 1994-12-ChristineDoran-LoganTemple)
+	re2 := regexp.MustCompile(`^(\d{4})-(\d{2})-`)
+	matches2 := re2.FindStringSubmatch(dirName)
+	if len(matches2) == 3 {
+		year, _ := strconv.Atoi(matches2[1])
+		month, _ := strconv.Atoi(matches2[2])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 {
+			return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC), "month", "filename", true
+		}
+	}
+
+	// Try to match YYYY- pattern (e.g., 1989-06-HyrumParty)
+	re3 := regexp.MustCompile(`^(\d{4})-(\d{2})-`)
+	matches3 := re3.FindStringSubmatch(dirName)
+	if len(matches3) == 3 {
+		year, _ := strconv.Atoi(matches3[1])
+		month, _ := strconv.Atoi(matches3[2])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 {
+			return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC), "month", "filename", true
+		}
+	}
+
+	// Try to match YYYY- pattern (year only)
+	re4 := regexp.MustCompile(`^(\d{4})-[^0-9]`)
+	matches4 := re4.FindStringSubmatch(dirName)
+	if len(matches4) == 2 {
+		year, _ := strconv.Atoi(matches4[1])
+		if year >= 1900 && year <= 2100 {
+			return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), "year", "filename", true
+		}
+	}
+
+	// Try to match YYYYMMDD pattern at start (directory names, e.g., 20170625-FortBuenaVentura)
+	re5 := regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})`)
+	matches5 := re5.FindStringSubmatch(dirName)
+	if len(matches5) == 4 {
+		year, _ := strconv.Atoi(matches5[1])
+		month, _ := strconv.Atoi(matches5[2])
+		day, _ := strconv.Atoi(matches5[3])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "directory", true
+		}
+	}
+
+	return time.Time{}, "unknown", "unknown", false
 }
 
 func photosHandler(w http.ResponseWriter, r *http.Request) {

@@ -137,9 +137,38 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - Trigger manual rescan
 
 ### Background Services
-- On startup: Scan both directories recursively, upsert into `photos` table
+- On startup: Scan directories specified in `PHOTO_ROOTS` recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
 - Thumbnail generation (optional, stored alongside or in cache dir)
+
+### PHOTO_ROOTS Configuration
+
+The `PHOTO_ROOTS` environment variable uses a `type:path` format to specify photo sources:
+
+```
+PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,scanned:/unas/images/scanned_photos/scan-date/2018/20180726-Slides
+```
+
+**Format:** `collection_type:absolute_path` (comma-separated for multiple roots)
+
+**Supported types:**
+- `digital`: For digital photos - automatically extracts date from directory names (YYYYMMDD pattern)
+- `scanned`: For scanned photos - date is initially unknown, can be manually set later
+
+**Date extraction for digital photos:**
+- Scans parent directory name for `YYYYMMDD` pattern
+- Example: `20170625-FortBuenaVentura` → photo_date=2017-06-25, date_precision='exact', date_source='directory'
+
+**Date extraction for scanned photos:**
+- Attempts to extract date from filename using these patterns (in order):
+  - `YYYY-MMDD-` → exact date (e.g., `1994-1216-LoganTemple` → 1994-12-16, exact)
+  - `YYYY-MM-` → month precision (e.g., `1994-12-ChristineDoran` or `1989-06-HyrumParty` → YYYY-06-01, month)
+  - `YYYY-` (with non-digit after) → year precision (e.g., `1994-ChristineBridalPhoto` → YYYY-01-01, year)
+- If no pattern matches, date remains unknown
+
+**Scanned photos:**
+- photo_date=NULL, date_precision='unknown', date_source='unknown' on import
+- Can be manually edited to year, year-month, or year-month-day with appropriate precision
 
 ### Photo Date Handling
 
@@ -242,10 +271,11 @@ src/
 4. Build Docker image (multi-stage: build React + Go binary)
 5. Configure `.env` or Docker secrets:
    - `DATABASE_URL`
+   - `CLI_DATABASE_URL` (for localhost development/scans)
    - `JWT_SECRET`
    - `GOOGLE_CLIENT_ID/SECRET`
    - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` (Mailcow account on fozzilinymoo.org)
-   - `PHOTO_ROOT=/unas/images`
+   - `PHOTO_ROOTS=digital:/path/to/digital,scanned:/path/to/scanned` (type:path format)
    - `LISTEN_ADDR=:8080`
 6. Run initial admin setup command
 7. Deploy with `docker compose up -d`
