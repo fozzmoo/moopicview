@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -209,17 +210,32 @@ func scanPhotos() {
 
 	rootsStr := os.Getenv("PHOTO_ROOTS")
 	if rootsStr == "" {
-		rootsStr = "/unas/images"
+		rootsStr = "digital:/unas/images"
 	}
-	roots := strings.Split(rootsStr, ",")
-	log.Println("Scanning photos in", roots)
+	rootEntries := strings.Split(rootsStr, ",")
+	var rootPaths []string
+	for _, entry := range rootEntries {
+		entry = strings.TrimSpace(entry)
+		if entry != "" {
+			rootPaths = append(rootPaths, entry)
+		}
+	}
+	log.Println("Scanning photos in", rootPaths)
 
 	// Delete missing files
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		rows, err := db.Query("SELECT id, filepath FROM photos WHERE filepath LIKE $1 ESCAPE '/'", root+"%")
+	for _, entry := range rootPaths {
+		parts := strings.SplitN(entry, ":", 2)
+		path := ""
+		if len(parts) == 2 {
+			path = parts[1]
+		} else {
+			path = parts[0]
+		}
+		path = strings.TrimSpace(path)
+
+		rows, err := db.Query("SELECT id, filepath FROM photos WHERE filepath LIKE $1 ESCAPE '/'", path+"%")
 		if err != nil {
-			log.Println("Delete query error for", root, ":", err)
+			log.Println("Delete query error for", path, ":", err)
 			continue
 		}
 		for rows.Next() {
@@ -235,31 +251,72 @@ func scanPhotos() {
 	}
 
 	// Add/update files
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	for _, entry := range rootPaths {
+		parts := strings.SplitN(entry, ":", 2)
+		photoType := "digital"
+		path := ""
+		if len(parts) == 2 {
+			photoType = strings.TrimSpace(parts[0])
+			path = strings.TrimSpace(parts[1])
+		} else {
+			path = strings.TrimSpace(parts[0])
+		}
+
+		filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			name := strings.ToLower(d.Name())
-			if strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".jpeg") || strings.HasSuffix(name, ".png") {
-				collection := "digital"
-				if strings.Contains(path, "scanned_photos") {
-					collection = "scanned"
+			name := d.Name()
+			nameLower := strings.ToLower(name)
+			if strings.HasSuffix(nameLower, ".jpg") || strings.HasSuffix(nameLower, ".jpeg") || strings.HasSuffix(nameLower, ".png") {
+				// Determine photo date based on type
+				var photoDate sql.NullString
+				var datePrecision string = "unknown"
+				var dateSource string = "unknown"
+
+				if photoType == "digital" {
+					// Try to extract date from parent directory name
+					parentDir := filepath.Base(filepath.Dir(fullPath))
+					if date, ok := extractDateFromDirName(parentDir); ok {
+						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+						datePrecision = "exact"
+						dateSource = "directory"
+					}
 				}
+				// For scanned photos, leave photo_date NULL with unknown precision
+
 				_, err = db.Exec(`
-					INSERT INTO photos (filepath, filename, collection, description)
-					VALUES ($1, $2, $3, $4)
-					ON CONFLICT (filepath) DO UPDATE SET filename = EXCLUDED.filename
-				`, path, d.Name(), collection, "Scanned photo")
+					INSERT INTO photos (filepath, filename, collection, scan_date, photo_date, date_precision, date_source, description)
+					VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7)
+					ON CONFLICT (filepath) DO UPDATE SET
+						filename = EXCLUDED.filename,
+						scan_date = CURRENT_DATE
+				`, fullPath, name, photoType, photoDate, datePrecision, dateSource, "Scanned photo")
 				if err == nil {
-					log.Println("Added/Updated:", d.Name())
+					log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s)", name, photoType, photoDate.String, datePrecision)
+				} else {
+					log.Printf("Error inserting %s: %v", fullPath, err)
 				}
 			}
 			return nil
 		})
 	}
 	log.Println("Scan complete.")
+}
+
+func extractDateFromDirName(dirName string) (time.Time, bool) {
+	// Try to match YYYYMMDD pattern at start
+	re := regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})`)
+	matches := re.FindStringSubmatch(dirName)
+	if len(matches) == 4 {
+		year, _ := strconv.Atoi(matches[1])
+		month, _ := strconv.Atoi(matches[2])
+		day, _ := strconv.Atoi(matches[3])
+		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func photosHandler(w http.ResponseWriter, r *http.Request) {
@@ -335,17 +392,19 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 	defer db.Close()
 
 	var photo struct {
-		ID          int    `json:"id"`
-		Filename    string `json:"filename"`
-		Description string `json:"description"`
-		Collection  string `json:"collection"`
-		ScanDate    string `json:"scan_date"`
-		ContentURL  string `json:"content_url"`
+		ID             int     `json:"id"`
+		Filename       string  `json:"filename"`
+		Description    string  `json:"description"`
+		Collection     string  `json:"collection"`
+		PhotoDate      *string `json:"photo_date"`
+		DatePrecision  string  `json:"date_precision"`
+		DateSource     string  `json:"date_source"`
+		ContentURL     string  `json:"content_url"`
 	}
 	err := db.QueryRow(`
-		SELECT id, filename, description, collection, COALESCE(scan_date::text, '')
+		SELECT id, filename, description, collection, photo_date::text, date_precision, date_source
 		FROM photos WHERE id = $1
-	`, id).Scan(&photo.ID, &photo.Filename, &photo.Description, &photo.Collection, &photo.ScanDate)
+	`, id).Scan(&photo.ID, &photo.Filename, &photo.Description, &photo.Collection, &photo.PhotoDate, &photo.DatePrecision, &photo.DateSource)
 	if err != nil {
 		http.Error(w, "Photo not found", http.StatusNotFound)
 		return

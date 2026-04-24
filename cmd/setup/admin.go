@@ -11,9 +11,12 @@ import (
 )
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("CLI_DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview?sslmode=disable"
 	}
 
 	email := os.Getenv("ADMIN_EMAIL")
@@ -58,55 +61,16 @@ func main() {
 			filename TEXT NOT NULL,
 			collection TEXT NOT NULL,
 			scan_date DATE,
+			photo_date DATE,
+			date_precision VARCHAR(10) DEFAULT 'unknown',
+			date_source VARCHAR(20) DEFAULT 'unknown',
 			description TEXT,
 			original_date TIMESTAMP,
 			width INTEGER,
 			height INTEGER,
 			imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS tags (
-			id SERIAL PRIMARY KEY,
-			name TEXT UNIQUE NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS photo_tags (
-			photo_id INTEGER REFERENCES photos(id),
-			tag_id INTEGER REFERENCES tags(id),
-			PRIMARY KEY (photo_id, tag_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS comments (
-			id SERIAL PRIMARY KEY,
-			photo_id INTEGER REFERENCES photos(id),
-			user_id INTEGER REFERENCES users(id),
-			content TEXT NOT NULL,
-			parent_id INTEGER REFERENCES comments(id),
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS proposed_edits (
-			id SERIAL PRIMARY KEY,
-			photo_id INTEGER REFERENCES photos(id),
-			user_id INTEGER REFERENCES users(id),
-			field TEXT NOT NULL,
-			proposed_value TEXT NOT NULL,
-			current_value TEXT,
-			status TEXT DEFAULT 'pending',
-			reviewed_by INTEGER REFERENCES users(id),
-			reviewed_at TIMESTAMP,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS activity_logs (
-			id SERIAL PRIMARY KEY,
-			user_id INTEGER REFERENCES users(id),
-			action TEXT NOT NULL,
-			entity_type TEXT,
-			entity_id INTEGER,
-			details JSONB,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
+
 	`)
 	if err != nil {
 		log.Fatal(err)
