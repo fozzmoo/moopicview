@@ -179,9 +179,12 @@ func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func scanPhotos() {
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("CLI_DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		dbURL = "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
 	}
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -200,7 +203,7 @@ func scanPhotos() {
 	// Delete missing files
 	for _, root := range roots {
 		root = strings.TrimSpace(root)
-		rows, err := db.Query("SELECT id, filepath FROM photos WHERE filepath LIKE $1", root+"%")
+		rows, err := db.Query("SELECT id, filepath FROM photos WHERE filepath LIKE $1 ESCAPE '/'", root+"%")
 		if err != nil {
 			log.Println("Delete query error for", root, ":", err)
 			continue
@@ -246,7 +249,10 @@ func scanPhotos() {
 }
 
 func photosHandler(w http.ResponseWriter, r *http.Request) {
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("CLI_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
 	if dbURL == "" {
 		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
 	}
@@ -287,7 +293,10 @@ func photoContentHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("CLI_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
 	if dbURL == "" {
 		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
 	}
@@ -322,7 +331,10 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("CLI_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
 	if dbURL == "" {
 		dbURL = "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
 	}
