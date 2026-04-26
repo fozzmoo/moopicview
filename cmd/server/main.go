@@ -163,13 +163,14 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 			path = strings.TrimSpace(parts[0])
 		}
 
-	// Count photos in this collection using the path as prefix
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM photos WHERE filepath LIKE $1 ESCAPE '/'", path+"%").Scan(&count)
-	if err != nil {
-		log.Printf("Count query error for %s: %v", path, err)
-		count = 0
-	}
+		// Count photos in this collection using the path as prefix
+		var count int
+		err := db.QueryRow("SELECT COUNT(*) FROM photos WHERE filepath LIKE $1", path+"%").Scan(&count)
+		if err != nil {
+			log.Printf("Count query error for %s: %v", path, err)
+			count = 0
+		}
+
 
 
 		// Extract the root collection name from path for display
@@ -204,14 +205,18 @@ func browseHandler(w http.ResponseWriter, r *http.Request) {
 	defer db.Close()
 
 	// Find all photos in this directory (direct children only, not subdirectories)
-	rows, _ := db.Query(`
+	rows, err := db.Query(`
 		SELECT id, filepath, filename, collection, photo_date::text, date_precision
-		FROM photos WHERE filepath LIKE $1 ESCAPE '/' AND filepath NOT LIKE $2 ESCAPE '/'
+		FROM photos WHERE filepath LIKE $1
 		ORDER BY filename
-	`, path+"/%", path+"/%/%")
+	`, path+"%")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	defer rows.Close()
 
-	var photos []map[string]interface{}
+	photos := make([]map[string]interface{}, 0)
 	directoriesSet := make(map[string]bool)
 
 	for rows.Next() {
@@ -242,7 +247,7 @@ func browseHandler(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 
 	// Convert set to sorted slice
-	var directories []map[string]interface{}
+	directories := make([]map[string]interface{}, 0)
 	for dir := range directoriesSet {
 		directories = append(directories, map[string]interface{}{
 			"name":  dir,
@@ -457,7 +462,7 @@ func extractExifDate(filePath string) (time.Time, string, bool) {
 		return time.Time{}, "", false
 	}
 
-	dateTime, err := x.DateTime(exif.DateTimeOriginalTag)
+	dateTime, err := x.DateTime()
 	if err != nil {
 		return time.Time{}, "", false
 	}
@@ -505,55 +510,6 @@ func extractDateFromDirName(dirName string) (time.Time, string, string, bool) {
 		year, _ := strconv.Atoi(matches4[1])
 		month, _ := strconv.Atoi(matches4[2])
 		day, _ := strconv.Atoi(matches4[3])
-		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
-			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "directory", true
-		}
-	}
-
-	return time.Time{}, "unknown", "unknown", false
-}
-
-	}
-
-	// Try to match YYYY-MM- pattern (e.g., 1994-12-ChristineDoran-LoganTemple)
-	re2 := regexp.MustCompile(`^(\d{4})-(\d{2})-`)
-	matches2 := re2.FindStringSubmatch(dirName)
-	if len(matches2) == 3 {
-		year, _ := strconv.Atoi(matches2[1])
-		month, _ := strconv.Atoi(matches2[2])
-		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 {
-			return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC), "month", "filename", true
-		}
-	}
-
-	// Try to match YYYY- pattern (e.g., 1989-06-HyrumParty)
-	re3 := regexp.MustCompile(`^(\d{4})-(\d{2})-`)
-	matches3 := re3.FindStringSubmatch(dirName)
-	if len(matches3) == 3 {
-		year, _ := strconv.Atoi(matches3[1])
-		month, _ := strconv.Atoi(matches3[2])
-		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 {
-			return time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC), "month", "filename", true
-		}
-	}
-
-	// Try to match YYYY- pattern (year only)
-	re4 := regexp.MustCompile(`^(\d{4})-[^0-9]`)
-	matches4 := re4.FindStringSubmatch(dirName)
-	if len(matches4) == 2 {
-		year, _ := strconv.Atoi(matches4[1])
-		if year >= 1900 && year <= 2100 {
-			return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), "year", "filename", true
-		}
-	}
-
-	// Try to match YYYYMMDD pattern at start (directory names, e.g., 20170625-FortBuenaVentura)
-	re5 := regexp.MustCompile(`^(\d{4})(\d{2})(\d{2})`)
-	matches5 := re5.FindStringSubmatch(dirName)
-	if len(matches5) == 4 {
-		year, _ := strconv.Atoi(matches5[1])
-		month, _ := strconv.Atoi(matches5[2])
-		day, _ := strconv.Atoi(matches5[3])
 		if year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31 {
 			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), "exact", "directory", true
 		}

@@ -22,8 +22,11 @@ MoopicView is a secure web application for sharing access to personal photo coll
 
 **Frontend:**
 - React + Vite + TypeScript
-- TailwindCSS for styling
+- TailwindCSS v4 for styling
 - React Router for navigation
+- shadcn/ui component library (Button, Card, Badge, Dropdown Menu, etc.)
+- Lucide React for icons
+- Context API for theme and navigation state management
 
 **Authentication:**
 - Email/password (bcrypt)
@@ -140,6 +143,32 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - View activity logs
 - Trigger manual rescan
 
+### UI/UX Features
+- **Modern Component Library**: Built with shadcn/ui for consistent, accessible components
+- **Theme System**: Dark/light mode toggle with system preference support
+  - Light mode: White/light gray backgrounds with dark text
+  - Dark mode: Dark gray backgrounds with light text
+  - System mode: Automatically follows OS preference
+  - Theme preference persisted in localStorage
+- **Responsive Navigation**:
+  - Fixed navbar with logo, navigation links, and user controls
+  - Theme toggle button in top-right corner
+  - Breadcrumb navigation showing full path hierarchy
+  - Path context for maintaining navigation state across views
+- **Photo Viewer Enhancements**:
+  - Vertical layout: Image takes full width, info panel below
+  - Download functionality with proper filename handling
+  - Navigation controls (previous/next) with keyboard shortcuts
+  - Action buttons: Add to favorites, Download, Share
+  - Metadata display: Collection, date, location, tags
+- **Browse Interface**:
+  - Card-based collection display with counts
+  - Folder grid with hover effects
+  - Photo grid with image thumbnails
+  - Search functionality for filtering photos
+  - Responsive design for desktop, tablet, and mobile
+- **Accessibility**: High contrast ratios, keyboard navigation, proper ARIA labels
+
 ### Background Services
 - On startup: Scan directories specified in `PHOTO_ROOTS` recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
@@ -254,21 +283,74 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 
 **Protected static routes** for built React app.
 
+**Currently Implemented Endpoints:**
+- ✅ `GET /api/health` - Health check
+- ✅ `GET /api/auth/login` - Login endpoint
+- ✅ `GET /api/collections` - List all collections with photo counts
+- ✅ `GET /api/browse?path=/path/to/dir` - Browse directory contents
+- ✅ `GET /api/photos` - List recent photos (paginated)
+- ✅ `GET /api/photos/:id` - Get photo metadata
+- ✅ `GET /api/photos/:id/content` - Serve image file
+- ✅ `POST /api/scan` - Trigger photo scan
+- ✅ `POST /api/auth/change-password` - Change user password
+
+**Frontend Features Implemented:**
+- ✅ Authentication flow (login, protected routes)
+- ✅ Theme switching (light/dark/system)
+- ✅ Hierarchical browsing (collections → years → folders → photos)
+- ✅ Photo grid with thumbnails
+- ✅ Photo viewer with navigation
+- ✅ Download functionality
+- ✅ Breadcrumb navigation
+- ✅ Search/filter photos
+- ✅ Responsive navbar
+- ✅ User account page
+- ✅ Admin dashboard (basic)
+
 ## 8. Frontend Structure
 
 ```
 src/
-├── components/     # Reusable (PhotoGrid, Lightbox, TagInput, CommentThread)
-├── pages/          # Login, Browse, PhotoView, AdminDashboard, Profile
-├── hooks/          # useAuth, usePhotos, useSearch
-├── lib/            # api client, auth utils
-├── types/          # TypeScript interfaces matching backend
-└── App.tsx
+├── components/     # UI components
+│   ├── ui/         # shadcn/ui components (Button, Card, Badge, Dropdown Menu, etc.)
+│   ├── navbar.tsx  # Main navigation bar with theme toggle
+│   ├── theme-toggle.tsx  # Dark/light mode switcher
+│   └── theme-provider.tsx  # Theme context provider
+├── pages/          # Page components
+│   ├── Login.tsx
+│   ├── Browse.tsx  # Collections and photo browsing
+│   ├── PhotoView.tsx  # Individual photo viewer
+│   ├── AdminDashboard.tsx
+│   └── Account.tsx
+├── hooks/          # React hooks
+│   └── useAuth.tsx  # Authentication state
+├── context/        # React contexts
+│   └── PathContext.tsx  # Navigation path state management
+├── lib/            # Utilities
+│   └── utils.ts    # Helper functions (cn for class merging)
+└── App.tsx         # Main app with routing
 ```
 
-- Responsive design optimized for both desktop and tablet
+**UI Component System:**
+- **shadcn/ui**: Copy-paste components built on Radix UI primitives
+- **Tailwind CSS v4**: Modern theming with CSS custom properties
+- **Lucide React**: Consistent icon set
+- **Path Alias**: `@/` imports for cleaner code
+
+**Theme System:**
+- CSS custom properties for color theming (`--color-background`, `--color-foreground`, etc.)
+- Theme classes (`dark`, `light`) applied to `<html>` element
+- Auto-detects system preference when set to "system" mode
+- Seamless transitions between themes with proper contrast ratios
+
+**Navigation State:**
+- PathContext maintains navigation breadcrumbs and history
+- State persists across page transitions (Browse → PhotoView)
+- Allows breadcrumb navigation back to any folder level
+
+- Responsive design optimized for desktop, tablet, and mobile
 - Infinite scroll or pagination for large collections
-- Dark theme by default (photo app aesthetic)
+- Dark mode support with high contrast for accessibility
 
 ## 9. Security Considerations
 

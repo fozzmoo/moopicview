@@ -6,6 +6,8 @@ import PhotoView from './pages/PhotoView';
 import AdminDashboard from './pages/AdminDashboard';
 import Account from './pages/Account';
 import { AuthProvider, useAuth } from './hooks/useAuth';
+import { PathProvider } from './context/PathContext';
+import { ThemeProvider } from './components/theme-provider';
 import './index.css';
 
 const queryClient = new QueryClient();
@@ -18,34 +20,38 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <Router>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/browse" element={
-              <ProtectedRoute>
-                <Browse />
-              </ProtectedRoute>
-            } />
-            <Route path="/photo/:id" element={
-              <ProtectedRoute>
-                <PhotoView />
-              </ProtectedRoute>
-            } />
-            <Route path="/admin" element={
-              <ProtectedRoute>
-                <AdminDashboard />
-              </ProtectedRoute>
-            } />
-            <Route path="/account" element={
-              <ProtectedRoute>
-                <Account />
-              </ProtectedRoute>
-            } />
-            <Route path="/" element={<Navigate to="/browse" />} />
-          </Routes>
-        </Router>
-      </AuthProvider>
+      <ThemeProvider defaultTheme="system" storageKey="moopicview-ui-theme">
+        <AuthProvider>
+          <PathProvider>
+            <Router>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route path="/browse" element={
+                  <ProtectedRoute>
+                    <Browse />
+                  </ProtectedRoute>
+                } />
+                <Route path="/photo/:id" element={
+                  <ProtectedRoute>
+                    <PhotoView />
+                  </ProtectedRoute>
+                } />
+                <Route path="/admin" element={
+                  <ProtectedRoute>
+                    <AdminDashboard />
+                  </ProtectedRoute>
+                } />
+                <Route path="/account" element={
+                  <ProtectedRoute>
+                    <Account />
+                  </ProtectedRoute>
+                } />
+                <Route path="/" element={<Navigate to="/browse" />} />
+              </Routes>
+            </Router>
+          </PathProvider>
+        </AuthProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

@@ -1,22 +1,27 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
-import { Folder } from 'lucide-react';
-
-type PathItem = { path: string; name: string };
+import { Folder, Search, ArrowLeft } from 'lucide-react';
+import { usePath } from '../context/PathContext';
+import { Navbar } from '../components/navbar';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
 
 export default function Browse() {
   const [view, setView] = useState<'collections' | 'browse'>('collections');
   const [collections, setCollections] = useState<any[]>([]);
-  const [currentPath, setCurrentPath] = useState('');
   const [directories, setDirectories] = useState<any[]>([]);
   const [photos, setPhotos] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
-  const [pathStack, setPathStack] = useState<PathItem[]>([]);
+  
+  const { pathStack, currentPath, setPathStack, setCurrentPath, addToPathStack, goBackInPath, resetPath } = usePath();
 
   useEffect(() => {
-    fetchCollections();
+    if (pathStack.length === 0 && !currentPath) {
+      fetchCollections();
+    }
   }, []);
 
   const fetchCollections = async () => {
@@ -46,7 +51,7 @@ export default function Browse() {
   };
 
   const handleDirectoryClick = (dirPath: string) => {
-    setPathStack([...pathStack, { path: currentPath, name: getBreadcrumbs(currentPath) }]);
+    addToPathStack({ path: currentPath, name: getBreadcrumbs(currentPath) });
     browsePath(dirPath);
   };
 
@@ -63,7 +68,7 @@ export default function Browse() {
   const handleBack = () => {
     if (pathStack.length > 0) {
       const prev = pathStack[pathStack.length - 1];
-      setPathStack(pathStack.slice(0, -1));
+      goBackInPath();
       if (prev.path) {
         browsePath(prev.path);
       } else {
@@ -78,114 +83,152 @@ export default function Browse() {
     return parts[parts.length - 1];
   };
 
+  const filteredPhotos = photos.filter(photo =>
+    photo.filename.toLowerCase().includes(search.toLowerCase()) ||
+    (photo.photo_date && photo.photo_date.includes(search))
+  );
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-white p-8">
-      <nav className="flex gap-6 mb-8 border-b border-zinc-800 pb-4">
-        <Link to="/browse" className="text-violet-400 hover:text-violet-300" onClick={() => setView('collections')}>
-          Browse
-        </Link>
-        <Link to="/account" className="hover:text-zinc-300">Account</Link>
-        <Link to="/admin" className="hover:text-zinc-300">Admin</Link>
-      </nav>
-
-      {view === 'collections' && (
-        <>
-          <h1 className="text-3xl font-bold mb-8">Photo Collections</h1>
-          {loading && <p>Loading...</p>}
-          {!loading && collections.length === 0 && <p className="text-zinc-400">No collections configured</p>}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {collections.map((col, i) => (
-              <button
-                key={i}
-                onClick={() => browsePath(col.path)}
-                className="bg-zinc-900 hover:bg-zinc-800 p-6 rounded-xl text-left transition-colors"
-              >
-                <h2 className="text-2xl font-bold capitalize">{col.type}</h2>
-                <p className="text-zinc-400 mt-2">{col.count} photos</p>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-
-      {view === 'browse' && (
-        <>
-          <div className="flex items-center gap-4 mb-6">
-            {pathStack.length > 0 && (
-              <button onClick={handleBack} className="text-zinc-400 hover:text-white">
-                ← Back
-              </button>
+    <div className="min-h-screen bg-background">
+      <Navbar />
+      <div className="container mx-auto px-4 py-8">
+        {view === 'collections' && (
+          <>
+            <div className="mb-8">
+              <h1 className="text-4xl font-bold tracking-tight text-foreground mb-2">Photo Collections</h1>
+              <p className="text-muted-foreground">Explore your photo library</p>
+            </div>
+            {loading && <p className="text-muted-foreground">Loading...</p>}
+            {!loading && collections.length === 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-muted-foreground">No collections configured</p>
+                </CardContent>
+              </Card>
             )}
-            <div className="flex items-center gap-2 text-zinc-400">
-              <Link to="/browse" className="hover:text-white">Browse</Link>
-              {pathStack.map((item, i) => (
-                <>
-                  <span className="text-zinc-600">/</span>
-                  <button onClick={() => handleBreadcrumbClick(i)} className="hover:text-white">
-                    {item.name}
-                  </button>
-                </>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {collections.map((col, i) => (
+                <Card key={i} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => browsePath(col.path)}>
+                  <CardHeader>
+                    <CardTitle className="capitalize text-2xl">{col.type}</CardTitle>
+                    <CardDescription>{col.count} photos</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Folder className="h-4 w-4" />
+                      <span>Browse collection</span>
+                    </div>
+                  </CardContent>
+                </Card>
               ))}
             </div>
-          </div>
-          <div className="flex justify-between items-center mb-8">
-            <h1 className="text-3xl font-bold">{getBreadcrumbs(currentPath)}</h1>
-            <input
-              type="text"
-              placeholder="Search..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-white w-80"
-            />
-          </div>
+          </>
+        )}
 
-          {loading && <p>Loading...</p>}
-          {!loading && directories.length === 0 && photos.length === 0 && (
-            <p className="text-zinc-400">This folder is empty</p>
-          )}
-
-          {directories.length > 0 && (
+        {view === 'browse' && (
+          <>
             <div className="mb-8">
-              <h2 className="text-xl font-semibold mb-4 text-zinc-300">Folders</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {directories.map((dir) => (
-                  <button
-                    key={dir.path}
-                    onClick={() => handleDirectoryClick(dir.path)}
-                    className="bg-zinc-900 hover:bg-zinc-800 p-4 rounded-xl text-left flex items-center gap-3 transition-colors"
-                  >
-                    <Folder className="w-8 h-8 text-zinc-400" />
-                    <span className="font-medium">{dir.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {photos.length > 0 && (
-            <div>
-              <h2 className="text-xl font-semibold mb-4 text-zinc-300">Photos ({photos.length})</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {photos.map((photo) => (
-                  <Link
-                    key={photo.id}
-                    to={`/photo/${photo.id}`}
-                    className="bg-zinc-900 rounded-xl overflow-hidden cursor-pointer hover:ring-2 hover:ring-violet-500 transition"
-                  >
-                    <img src={photo.url} alt={photo.filename} className="w-full h-48 object-cover" />
-                    <div className="p-3">
-                      <p className="text-sm font-medium truncate">{photo.filename}</p>
-                      <p className="text-xs text-zinc-500">
-                        {photo.photo_date || 'Unknown date'}
-                      </p>
-                    </div>
+              <div className="flex items-center gap-4 mb-6">
+                {pathStack.length > 0 && (
+                  <Button variant="ghost" onClick={handleBack}>
+                    <ArrowLeft className="mr-2 h-4 w-4" />
+                    Back
+                  </Button>
+                )}
+                <nav className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Link to="/browse" className="hover:text-foreground" onClick={() => { resetPath(); setView('collections'); }}>
+                    Browse
                   </Link>
-                ))}
+                  {pathStack.map((item, i) => (
+                    <React.Fragment key={i}>
+                      <span className="text-muted-foreground/50">/</span>
+                      <button onClick={() => handleBreadcrumbClick(i)} className="hover:text-foreground">
+                        {item.name}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                  {currentPath && (
+                    <>
+                      <span className="text-muted-foreground/50">/</span>
+                      <span className="text-foreground font-medium">{getBreadcrumbs(currentPath)}</span>
+                    </>
+                  )}
+                </nav>
+              </div>
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
+                <h1 className="text-3xl font-bold text-foreground">{getBreadcrumbs(currentPath)}</h1>
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Search photos..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-input rounded-md bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
               </div>
             </div>
-          )}
-        </>
-      )}
+
+            {loading && <p className="text-muted-foreground">Loading...</p>}
+            {!loading && directories.length === 0 && photos.length === 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-muted-foreground">This folder is empty</p>
+                </CardContent>
+              </Card>
+            )}
+
+            {directories.length > 0 && (
+              <div className="mb-8">
+                <h2 className="text-xl font-semibold text-foreground mb-4">Folders</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  {directories.map((dir) => (
+                    <Card key={dir.path} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => handleDirectoryClick(dir.path)}>
+                      <CardContent className="p-4">
+                        <div className="flex flex-col items-center gap-2 text-center">
+                          <Folder className="h-12 w-12 text-muted-foreground group-hover:text-primary transition-colors" />
+                          <span className="font-medium text-sm text-foreground">{dir.name}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {filteredPhotos.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <h2 className="text-xl font-semibold text-foreground">Photos</h2>
+                  <Badge variant="secondary">{filteredPhotos.length}</Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {filteredPhotos.map((photo) => (
+                    <Link key={photo.id} to={`/photo/${photo.id}`}>
+                      <Card className="group hover:shadow-xl transition-all overflow-hidden">
+                        <div className="relative aspect-square overflow-hidden bg-muted">
+                          <img
+                            src={photo.url}
+                            alt={photo.filename}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        </div>
+                        <CardContent className="p-3">
+                          <p className="text-sm font-medium truncate">{photo.filename}</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {photo.photo_date || 'Unknown date'}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
