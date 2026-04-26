@@ -26,11 +26,12 @@ function App() {
             <Router>
               <Routes>
                 <Route path="/login" element={<Login />} />
-                <Route path="/browse" element={
+                <Route path="/collections" element={
                   <ProtectedRoute>
                     <Browse />
                   </ProtectedRoute>
                 } />
+                <Route path="/browse" element={<Navigate to="/collections" />}/>
                 <Route path="/photo/:id" element={
                   <ProtectedRoute>
                     <PhotoView />
@@ -46,7 +47,7 @@ function App() {
                     <Account />
                   </ProtectedRoute>
                 } />
-                <Route path="/" element={<Navigate to="/browse" />} />
+                <Route path="/" element={<Navigate to="/collections" />} />
               </Routes>
             </Router>
           </PathProvider>

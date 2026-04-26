@@ -12,20 +12,16 @@ export default function PhotoView() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [photo, setPhoto] = useState<any>(null);
-  const [photos, setPhotos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
-  const { pathStack, currentPath } = usePath();
+  const { pathStack, currentPath, currentPhotos } = usePath();
+  const photos = currentPhotos;
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [photoRes, listRes] = await Promise.all([
-          axios.get(`/api/photos/${id}`),
-          axios.get('/api/photos')
-        ]);
+        const photoRes = await axios.get(`/api/photos/${id}`);
         setPhoto(photoRes.data);
-        setPhotos(listRes.data);
       } catch (err) {
         console.error(err);
       } finally {
@@ -43,6 +39,10 @@ export default function PhotoView() {
     const parts = path.split('/').filter(Boolean);
     if (parts.length === 0) return 'Root';
     return parts[parts.length - 1];
+  };
+
+  const navigateToPath = (path: string) => {
+    navigate(`/collections?path=${encodeURIComponent(path)}`);
   };
 
   const handleDownload = async () => {
@@ -83,11 +83,11 @@ export default function PhotoView() {
       <Navbar />
       <div className="container mx-auto px-4 py-6">
         <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
-          <Link to="/browse" className="hover:text-foreground">Browse</Link>
+          <Link to="/collections" className="hover:text-foreground">Collections</Link>
           {pathStack.map((item, i) => (
             <React.Fragment key={i}>
               <span className="text-muted-foreground/50">/</span>
-              <Link to={`/browse?path=${encodeURIComponent(item.path)}`} className="hover:text-foreground">
+              <Link to="/collections" className="hover:text-foreground" onClick={(e) => { e.preventDefault(); navigateToPath(item.path); }}>
                 {item.name}
               </Link>
             </React.Fragment>

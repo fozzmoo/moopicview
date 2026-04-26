@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { Folder, Search, ArrowLeft } from 'lucide-react';
 import { usePath } from '../context/PathContext';
@@ -9,6 +9,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 
 export default function Browse() {
+  const location = useLocation();
   const [view, setView] = useState<'collections' | 'browse'>('collections');
   const [collections, setCollections] = useState<any[]>([]);
   const [directories, setDirectories] = useState<any[]>([]);
@@ -16,13 +17,23 @@ export default function Browse() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   
-  const { pathStack, currentPath, setPathStack, setCurrentPath, addToPathStack, goBackInPath, resetPath } = usePath();
+  const { pathStack, currentPath, setPathStack, setCurrentPath, setCurrentPhotos, addToPathStack, goBackInPath, resetPath } = usePath();
 
   useEffect(() => {
-    if (pathStack.length === 0 && !currentPath) {
+    fetchCollections();
+  }, []);
+
+  // Handle URL parameters for browsing specific paths
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const pathParam = params.get('path');
+    
+    if (pathParam) {
+      browsePath(pathParam);
+    } else {
       fetchCollections();
     }
-  }, []);
+  }, [location.search]);
 
   const fetchCollections = async () => {
     setLoading(true);
@@ -31,7 +42,7 @@ export default function Browse() {
       setCollections(res.data);
       setView('collections');
     } catch (err) {
-      console.error(err);
+      console.error('Failed to fetch collections:', err);
     }
     setLoading(false);
   };
@@ -42,6 +53,7 @@ export default function Browse() {
       const res = await axios.get(`/api/browse?path=${encodeURIComponent(path)}`);
       setDirectories(res.data.directories);
       setPhotos(res.data.photos);
+      setCurrentPhotos(res.data.photos);
       setCurrentPath(path);
       setView('browse');
     } catch (err) {
@@ -61,6 +73,7 @@ export default function Browse() {
     if (newPath) {
       browsePath(newPath);
     } else {
+      setView('collections');
       fetchCollections();
     }
   };
@@ -136,8 +149,8 @@ export default function Browse() {
                   </Button>
                 )}
                 <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Link to="/browse" className="hover:text-foreground" onClick={() => { resetPath(); setView('collections'); }}>
-                    Browse
+                  <Link to="/collections" className="hover:text-foreground" onClick={(e) => { e.preventDefault(); resetPath(); fetchCollections(); }}>
+                    Collections
                   </Link>
                   {pathStack.map((item, i) => (
                     <React.Fragment key={i}>

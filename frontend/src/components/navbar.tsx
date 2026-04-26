@@ -7,12 +7,12 @@ export function Navbar() {
   return (
     <nav className="flex items-center justify-between border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-8 py-4">
       <div className="flex items-center gap-6">
-        <Link to="/browse" className="text-xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
+        <Link to="/" className="text-xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
           MoopicView
         </Link>
         <div className="flex items-center gap-4 text-sm">
-          <Link to="/browse" className="text-muted-foreground hover:text-foreground transition-colors">
-            Browse
+          <Link to="/collections" className="text-muted-foreground hover:text-foreground transition-colors">
+            Collections
           </Link>
           <Link to="/account" className="text-muted-foreground hover:text-foreground transition-colors">
             Account
