@@ -1,45 +1,43 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Folder, Search, ArrowLeft } from 'lucide-react';
-import { usePath } from '../context/PathContext';
 import { Navbar } from '../components/navbar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 
-export default function Browse() {
+export default function Collections() {
   const location = useLocation();
-  const [view, setView] = useState<'collections' | 'browse'>('collections');
+  const navigate = useNavigate();
+  const [view, setView] = useState<'collections' | 'folders'>('collections');
   const [collections, setCollections] = useState<any[]>([]);
+  const [currentFolder, setCurrentFolder] = useState<any>(null);
   const [directories, setDirectories] = useState<any[]>([]);
   const [photos, setPhotos] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
-  
-  const { pathStack, currentPath, setPathStack, setCurrentPath, setCurrentPhotos, addToPathStack, goBackInPath, resetPath } = usePath();
 
   useEffect(() => {
-    fetchCollections();
-  }, []);
-
-  // Handle URL parameters for browsing specific paths
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const pathParam = params.get('path');
+    const pathSegments = location.pathname.split('/').filter(Boolean);
+    const folderId = pathSegments.length > 1 ? parseInt(pathSegments[1]) : null;
     
-    if (pathParam) {
-      browsePath(pathParam);
+    if (folderId) {
+      loadFolder(folderId);
     } else {
-      fetchCollections();
+      loadCollections();
     }
-  }, [location.search]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
-  const fetchCollections = async () => {
+  const loadCollections = async () => {
     setLoading(true);
     try {
       const res = await axios.get('/api/collections');
       setCollections(res.data);
+      setCurrentFolder(null);
+      setDirectories([]);
+      setPhotos([]);
       setView('collections');
     } catch (err) {
       console.error('Failed to fetch collections:', err);
@@ -47,59 +45,36 @@ export default function Browse() {
     setLoading(false);
   };
 
-  const browsePath = async (path: string) => {
+  const loadFolder = async (folderId: number) => {
     setLoading(true);
     try {
-      const res = await axios.get(`/api/browse?path=${encodeURIComponent(path)}`);
-      setDirectories(res.data.directories);
-      setPhotos(res.data.photos);
-      setCurrentPhotos(res.data.photos);
-      setCurrentPath(path);
-      setView('browse');
+      const res = await axios.get(`/api/collections/${folderId}`);
+      setCurrentFolder(res.data.folder);
+      setDirectories(res.data.directories || []);
+      setPhotos(res.data.photos || []);
+      setView('folders');
     } catch (err) {
-      console.error(err);
+      console.error('Failed to load folder:', err);
     }
     setLoading(false);
   };
 
-  const handleDirectoryClick = (dirPath: string) => {
-    addToPathStack({ path: currentPath, name: getBreadcrumbs(currentPath) });
-    browsePath(dirPath);
-  };
-
-  const handleBreadcrumbClick = (index: number) => {
-    const newPath = pathStack[index].path;
-    setPathStack(pathStack.slice(0, index));
-    if (newPath) {
-      browsePath(newPath);
-    } else {
-      setView('collections');
-      fetchCollections();
-    }
+  const handleFolderClick = (folderId: number) => {
+    navigate(`/collections/${folderId}`);
   };
 
   const handleBack = () => {
-    if (pathStack.length > 0) {
-      const prev = pathStack[pathStack.length - 1];
-      goBackInPath();
-      if (prev.path) {
-        browsePath(prev.path);
-      } else {
-        fetchCollections();
-      }
-    }
+    navigate('/collections');
   };
 
-  const getBreadcrumbs = (path: string): string => {
-    const parts = path.split('/').filter(Boolean);
-    if (parts.length === 0) return 'Root';
-    return parts[parts.length - 1];
-  };
-
-  const filteredPhotos = photos.filter(photo =>
+  const filteredPhotos = (photos || []).filter(photo =>
     photo.filename.toLowerCase().includes(search.toLowerCase()) ||
     (photo.photo_date && photo.photo_date.includes(search))
   );
+
+  const getCollectionTypeLabel = (type: string) => {
+    return type === 'digital' ? 'Digital' : 'Scanned';
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -120,16 +95,16 @@ export default function Browse() {
               </Card>
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {collections.map((col, i) => (
-                <Card key={i} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => browsePath(col.path)}>
+              {collections.map((col) => (
+                <Card key={col.id} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => handleFolderClick(col.id)}>
                   <CardHeader>
-                    <CardTitle className="capitalize text-2xl">{col.type}</CardTitle>
-                    <CardDescription>{col.count} photos</CardDescription>
+                    <CardTitle className="capitalize text-2xl">{col.name}</CardTitle>
+                    <CardDescription>{col.count} photos ({getCollectionTypeLabel(col.type)})</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Folder className="h-4 w-4" />
-                      <span>Browse collection</span>
+                      <span>View collection</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -138,38 +113,25 @@ export default function Browse() {
           </>
         )}
 
-        {view === 'browse' && (
+        {view === 'folders' && currentFolder && (
           <>
             <div className="mb-8">
               <div className="flex items-center gap-4 mb-6">
-                {pathStack.length > 0 && (
-                  <Button variant="ghost" onClick={handleBack}>
-                    <ArrowLeft className="mr-2 h-4 w-4" />
-                    Back
-                  </Button>
-                )}
+                <Button variant="ghost" onClick={handleBack}>
+                  <ArrowLeft className="mr-2 h-4 w-4" />
+                  Back to Collections
+                </Button>
                 <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Link to="/collections" className="hover:text-foreground" onClick={(e) => { e.preventDefault(); resetPath(); fetchCollections(); }}>
-                    Collections
-                  </Link>
-                  {pathStack.map((item, i) => (
-                    <React.Fragment key={i}>
-                      <span className="text-muted-foreground/50">/</span>
-                      <button onClick={() => handleBreadcrumbClick(i)} className="hover:text-foreground">
-                        {item.name}
-                      </button>
-                    </React.Fragment>
-                  ))}
-                  {currentPath && (
-                    <>
-                      <span className="text-muted-foreground/50">/</span>
-                      <span className="text-foreground font-medium">{getBreadcrumbs(currentPath)}</span>
-                    </>
-                  )}
+                  <Link to="/collections" className="hover:text-foreground">Collections</Link>
+                  <span className="text-muted-foreground/50">/</span>
+                  <span className="text-foreground font-medium">{currentFolder.name}</span>
+                  <span className="text-muted-foreground ml-1">
+                    ({getCollectionTypeLabel(currentFolder.collection_type)})
+                  </span>
                 </nav>
               </div>
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-                <h1 className="text-3xl font-bold text-foreground">{getBreadcrumbs(currentPath)}</h1>
+                <h1 className="text-3xl font-bold text-foreground">{currentFolder.name}</h1>
                 <div className="relative w-full sm:w-64">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <input
@@ -197,7 +159,7 @@ export default function Browse() {
                 <h2 className="text-xl font-semibold text-foreground mb-4">Folders</h2>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
                   {directories.map((dir) => (
-                    <Card key={dir.path} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => handleDirectoryClick(dir.path)}>
+                    <Card key={dir.id} className="group hover:shadow-lg transition-all cursor-pointer" onClick={() => handleFolderClick(dir.id)}>
                       <CardContent className="p-4">
                         <div className="flex flex-col items-center gap-2 text-center">
                           <Folder className="h-12 w-12 text-muted-foreground group-hover:text-primary transition-colors" />

@@ -12,16 +12,15 @@ export default function Login() {
   const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
-    console.log('Login submitted with', email);
     e.preventDefault();
     setIsLoading(true);
     setError('');
     try {
       await login(email, password);
-      navigate('/browse');
+      navigate('/collections');
     } catch (err: any) {
       console.error('Login error:', err);
-      setError(err.response?.data || 'Login failed. Try admin@fozzilinymoo.org / admin123');
+      setError(err.response?.data || 'Login failed. Please check your credentials.');
     }
     setIsLoading(false);
   };
@@ -37,8 +36,9 @@ export default function Login() {
         <div className="bg-zinc-900 rounded-2xl p-8 shadow-xl">
           <form onSubmit={handleLogin} className="space-y-6">
             <div>
-              <label className="block text-sm text-zinc-400 mb-2">Email</label>
+              <label htmlFor="email" className="block text-sm text-zinc-400 mb-2">Email</label>
               <input
+                id="email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -47,8 +47,9 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="block text-sm text-zinc-400 mb-2">Password</label>
+              <label htmlFor="password" className="block text-sm text-zinc-400 mb-2">Password</label>
               <input
+                id="password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

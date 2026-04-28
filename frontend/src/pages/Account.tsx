@@ -36,7 +36,7 @@ export default function Account() {
     <div className="min-h-screen bg-zinc-950 text-white p-8">
       <div className="max-w-md mx-auto">
         <div className="flex justify-between items-center mb-8">
-          <Link to="/browse" className="flex items-center gap-2 text-zinc-400 hover:text-white">
+          <Link to="/collections" className="flex items-center gap-2 text-zinc-400 hover:text-white">
             <ArrowLeft className="w-5 h-5" /> Back to Collections
           </Link>
           <button

@@ -39,6 +39,12 @@ MoopicView is a secure web application for sharing access to personal photo coll
 - Background file scanner + watcher
 - CLI tool for initial admin setup
 
+**Testing & TDD:**
+- Backend: Go built-in testing framework with test database
+- Frontend: Vitest + Testing Library + JSDOM
+- Mock APIs for isolated frontend testing
+- Test database for backend integration tests
+
 ## 3. High-Level Architecture
 
 ```
@@ -137,11 +143,15 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Admins can edit dates; users can propose date changes
 
 ### Admin Features
+- Create new user accounts (First name, Last name, Email, Password, Admin status)
 - Manage users and pending account requests
+- Change user passwords
+- Toggle admin privileges for users
 - Review/approve/reject proposed edits (triggers email to proposer)
-- Direct edit of photo metadata
+- Direct edit of photo metadata (including date with precision)
 - View activity logs
 - Trigger manual rescan
+- All admin endpoints are protected with role-based access control (requires admin role)
 
 ### UI/UX Features
 - **Modern Component Library**: Built with shadcn/ui for consistent, accessible components
@@ -161,6 +171,8 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Navigation controls (previous/next) with keyboard shortcuts
   - Action buttons: Add to favorites, Download, Share
   - Metadata display: Collection, date, location, tags
+  - Smart date formatting based on precision (June 1989 instead of 1989-06-01)
+  - Admin users can edit photo date directly from viewer
 - **Browse Interface**:
   - Card-based collection display with counts
   - Folder grid with hover effects
@@ -221,11 +233,12 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - Example: `20170625-FortBuenaVentura` → photo_date=2017-06-25, date_precision='exact', date_source='directory'
 
 **Date extraction for scanned photos:**
-- Attempts to extract date from filename using these patterns (in order):
+- Attempts to extract date from filename using these patterns (in order of specificity):
+  - `YYYYMMDD-` → exact date (e.g., `20170625-FortBuenaVentura` → 2017-06-25, exact)
   - `YYYY-MMDD-` → exact date (e.g., `1994-1216-LoganTemple` → 1994-12-16, exact)
   - `YYYY-MM-` → month precision (e.g., `1994-12-ChristineDoran` → 1994-12-01, month)
-  - `YYYY-` (with digit after) → month precision (e.g., `1989-06-HyrumParty` → 1989-06-01, month)
-  - `YYYY-` (with non-digit after) → year precision (e.g., `1994-ChristineBridalPhoto` → 1994-01-01, year)
+  - `1989-06-HyrumParty-HeatherRyan.jpg` → June 1989 (month precision)
+  - `YYYY-` (with non-digit after) → year precision (e.g., `2019-FamilyVacation` → 2019-01-01, year)
 - If no pattern matches, date remains unknown
 
 **Scanned photos:**
@@ -247,6 +260,15 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
   - Year only → `photo_date=YYYY-01-01`, `date_precision='year'`, `date_source='manual'`
   - Year+Month → `photo_date=YYYY-MM-01`, `date_precision='month'`, `date_source='manual'`
   - Full date → `photo_date=YYYY-MM-DD`, `date_precision='exact'`, `date_source='manual'`
+
+**Date Display Formatting:**
+- Dates are stored in the database as full dates (e.g., 1989-06-01) with precision metadata
+- Frontend formats dates based on precision:
+  - `year` → "1989" (only year displayed)
+  - `month` → "June 1989" (month name and year, day omitted)
+  - `exact` → "June 25, 2017" (full date with month name)
+  - `unknown` → "Unknown date"
+- This avoids showing misleading dates like "1989-06-01" when only the month is known
   - Leave unknown → `photo_date=NULL`, `date_precision='unknown'`
 
 **Date Display:**
@@ -276,36 +298,52 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - `POST /api/photos/:id/propose-edit`
 
 **Admin:**
-- `GET /api/admin/users`
-- `POST /api/admin/users/:id/approve`
-- `GET /api/admin/proposed-edits`
-- `POST /api/admin/proposed-edits/:id/review`
+- `GET /api/admin/users` - Requires admin role
+- `POST /api/admin/users` - Create new user (first_name, last_name, email, password, is_admin) - Requires admin role
+- `POST /api/admin/users/:id/approve` - Requires admin role
+- `POST /api/admin/users/:id/change-password` - Change user password - Requires admin role
+- `POST /api/admin/users/:id/toggle-admin` - Toggle admin status - Requires admin role
+- `GET /api/admin/proposed-edits` - Requires admin role
+- `POST /api/admin/proposed-edits/:id/review` - Requires admin role
+- `POST /api/admin/photos/:id/date` - Edit photo date (photo_date, date_precision) - Requires admin role
 
 **Protected static routes** for built React app.
 
 **Currently Implemented Endpoints:**
 - ✅ `GET /api/health` - Health check
 - ✅ `GET /api/auth/login` - Login endpoint
+- ✅ `POST /api/auth/change-password` - Change user password
 - ✅ `GET /api/collections` - List all collections with photo counts
-- ✅ `GET /api/browse?path=/path/to/dir` - Browse directory contents
+- ✅ `GET /api/collections/:id` - Get folder contents by ID
 - ✅ `GET /api/photos` - List recent photos (paginated)
-- ✅ `GET /api/photos/:id` - Get photo metadata
+- ✅ `GET /api/photos/:id` - Get photo metadata (with prev/next navigation IDs)
 - ✅ `GET /api/photos/:id/content` - Serve image file
 - ✅ `POST /api/scan` - Trigger photo scan
-- ✅ `POST /api/auth/change-password` - Change user password
+- ✅ `GET /api/admin/users` - List all users (requires admin role)
+- ✅ `POST /api/admin/users` - Create new user account (requires admin role)
+- ✅ `POST /api/admin/users/:id/approve` - Approve user account (requires admin role)
+- ✅ `POST /api/admin/users/:id/change-password` - Change user password (requires admin role)
+- ✅ `POST /api/admin/users/:id/toggle-admin` - Toggle admin status (requires admin role)
+- ✅ `GET /api/admin/proposed-edits` - List proposed edits (requires admin role)
+- ✅ `POST /api/admin/proposed-edits/:id/review` - Review proposed edit (requires admin role)
+- ✅ `POST /api/admin/photos/:id/date` - Edit photo date (requires admin role)
 
 **Frontend Features Implemented:**
 - ✅ Authentication flow (login, protected routes)
 - ✅ Theme switching (light/dark/system)
 - ✅ Hierarchical browsing (collections → years → folders → photos)
 - ✅ Photo grid with thumbnails
-- ✅ Photo viewer with navigation
+- ✅ Photo viewer with navigation (previous/next buttons, keyboard shortcuts)
 - ✅ Download functionality
 - ✅ Breadcrumb navigation
 - ✅ Search/filter photos
 - ✅ Responsive navbar
+- ✅ Admin dashboard (user management, proposed edits review)
+- ✅ Create new users with admin checkbox
+- ✅ Toggle admin status for existing users
+- ✅ TDD harness setup (Go tests + Vitest + Testing Library)
 - ✅ User account page
-- ✅ Admin dashboard (basic)
+- ✅ Previous/next navigation in photo viewer
 
 ## 8. Frontend Structure
 
@@ -352,7 +390,54 @@ src/
 - Infinite scroll or pagination for large collections
 - Dark mode support with high contrast for accessibility
 
-## 9. Security Considerations
+## 9. Testing & TDD Harness
+
+### Backend Testing (Go)
+**Framework:** Go built-in testing package
+**Test Database:** `moopicview_test` (isolated from production)
+
+**Test Coverage:**
+- `TestLoginHandler` - Tests login with valid/invalid credentials
+- `TestAdminUsersHandler` - Tests listing all users
+- `TestAdminUserApproveHandler` - Tests approving user accounts
+- `TestHealthHandler` - Tests health check endpoint
+
+**Running Tests:**
+```bash
+TEST_DATABASE_URL="postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable" go test -v ./cmd/server/
+```
+
+### Frontend Testing (Vitest + Testing Library)
+**Framework:** Vitest + Testing Library + JSDOM
+**Setup File:** `src/test/setup.ts` - Configures test environment and mocks
+
+**Test Coverage:**
+- `Login.test.tsx` - Login form rendering, error handling, form submission
+- `Collections.test.tsx` - Collections list and folder navigation
+- `PhotoView.test.tsx` - Photo details, navigation, download functionality
+- `AdminDashboard.test.tsx` - User management and proposed edits review
+- `Navbar.test.tsx` - Navigation links and theme toggle
+
+**Running Tests:**
+```bash
+cd frontend && npm run test
+```
+
+**Key Testing Practices:**
+- Mock API calls using `vi.mock('axios')`
+- Wrap components with necessary providers (AuthProvider, BrowserRouter)
+- Use `waitFor` for async operations
+- Test both success and error scenarios
+- Verify user interactions and navigation
+
+### TDD Benefits
+- **Early Bug Detection:** Catches issues before they reach production
+- **Design Feedback:** Tests drive better component and API design
+- **Regression Prevention:** Ensures new features don't break existing functionality
+- **Documentation:** Tests serve as living documentation of expected behavior
+- **Confidence:** Safe refactoring with test coverage
+
+## 10. Security Considerations
 
 - All file serving protected by auth middleware
 - Rate limiting on login and password reset
@@ -363,7 +448,7 @@ src/
 - CSP, XSS protection in React
 - Caddy on `lok` provides HTTPS, rate limiting, and optional access controls
 
-## 10. Networking & Infrastructure
+## 11. Networking & Infrastructure
 
 **Hosts:**
 - **`tic`**: Fedora 43 file server. Runs the MoopicView Docker container. Mounts Ubiquiti NAS via CIFS/SMB at `/unas`.

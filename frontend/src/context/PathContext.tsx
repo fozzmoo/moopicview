@@ -30,6 +30,7 @@ export const PathProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const resetPath = () => {
+    console.log('[PathContext] resetPath called');
     setPathStack([]);
     setCurrentPath('');
     setCurrentPhotos([]);

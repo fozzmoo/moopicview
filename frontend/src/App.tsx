@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Login from './pages/Login';
-import Browse from './pages/Browse';
+import Collections from './pages/Collections';
 import PhotoView from './pages/PhotoView';
 import AdminDashboard from './pages/AdminDashboard';
 import Account from './pages/Account';
@@ -28,10 +28,14 @@ function App() {
                 <Route path="/login" element={<Login />} />
                 <Route path="/collections" element={
                   <ProtectedRoute>
-                    <Browse />
+                    <Collections />
                   </ProtectedRoute>
                 } />
-                <Route path="/browse" element={<Navigate to="/collections" />}/>
+                <Route path="/collections/:id" element={
+                  <ProtectedRoute>
+                    <Collections />
+                  </ProtectedRoute>
+                } />
                 <Route path="/photo/:id" element={
                   <ProtectedRoute>
                     <PhotoView />
