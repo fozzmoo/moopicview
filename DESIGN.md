@@ -127,7 +127,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 ## 6. Key Features
 
 ### User Features
-- **Browse**: Hierarchical navigation through collections
+- **Collections**: Hierarchical navigation through collections
   - Level 1: Collections (from PHOTO_ROOTS: Digital, Scanned)
   - Level 2: Years (derived from directories, e.g., 2017, 2024)
   - Level 3: Event/folder names (e.g., 20170625-FortBuenaVentura, 20240404)
@@ -173,7 +173,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Metadata display: Collection, date, location, tags
   - Smart date formatting based on precision (June 1989 instead of 1989-06-01)
   - Admin users can edit photo date directly from viewer
-- **Browse Interface**:
+- **Collections Interface**:
   - Card-based collection display with counts
   - Folder grid with hover effects
   - Photo grid with image thumbnails
@@ -194,25 +194,15 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
    - Each shows total photo count
    - UI: Card-based or list view
 
-2. **Years** (`GET /api/browse?path=/unas/images/digital_photos`):
-   - Scans DB for unique year directories under collection path
-   - Lists years (2017, 2018, 2024) with photo counts
-   - Derived from directory structure: `/YYYY/YYYYMMDD-*`
-
-3. **Event Folders** (`GET /api/browse?path=/unas/images/digital_photos/2017`):
-   - Lists event/folder names (20170625-FortBuenaVentura) with photo counts
-   - Extracted from YYYYMMDD-* pattern
-
-4. **Photos** (`GET /api/browse?path=/unas/images/digital_photos/2017/20170625-FortBuenaVentura`):
-   - Displays photo grid for this specific folder
-   - Supports pagination/infinite scroll
-   - Clicking opens photo viewer
+2. **Subcollections/Folders** (`GET /api/collections/:id`):
+   - Returns subdirectories and photos for a specific folder ID
+   - If the folder has subdirectories, they are listed
+   - If the folder is a leaf (no subdirectories), photos are displayed
+   - Derived from database folder structure
 
 **URL Structure:**
-- `/browse` → Collections list
-- `/browse?path=/unas/images/digital_photos` → Years
-- `/browse?path=/unas/images/digital_photos/2017` → Folders
-- `/browse?path=/unas/images/digital_photos/2017/20170625-FortBuenaVentura` → Photos
+- `/collections` → Collections list
+- `/collections/{id}` → Subcollections (Years/Folders) or Photos (if leaf folder)
 
 ### PHOTO_ROOTS Configuration
 
@@ -287,7 +277,7 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 
 **Collections & Browse (Hierarchical Navigation):**
 - `GET /api/collections` (list all collections with photo counts from PHOTO_ROOTS)
-- `GET /api/browse?path=/path/to/dir` (returns subdirectories and photos in given path)
+- `GET /api/collections/:id` (returns subdirectories, photos, and breadcrumbs in given folder ID)
 
 **Photos:**
 - `GET /api/photos` (search, pagination, filters)
@@ -356,7 +346,7 @@ src/
 │   └── theme-provider.tsx  # Theme context provider
 ├── pages/          # Page components
 │   ├── Login.tsx
-│   ├── Browse.tsx  # Collections and photo browsing
+│   ├── Collections.tsx  # Collections and photo browsing
 │   ├── PhotoView.tsx  # Individual photo viewer
 │   ├── AdminDashboard.tsx
 │   └── Account.tsx
@@ -383,7 +373,7 @@ src/
 
 **Navigation State:**
 - PathContext maintains navigation breadcrumbs and history
-- State persists across page transitions (Browse → PhotoView)
+- State persists across page transitions (Collections → PhotoView)
 - Allows breadcrumb navigation back to any folder level
 
 - Responsive design optimized for desktop, tablet, and mobile

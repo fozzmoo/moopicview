@@ -19,7 +19,7 @@ const mockedApi = api as unknown as typeof api & {
 }
 
 describe('Login', () => {
-  it('renders login form', () => {
+  it('renders login form with tabs', () => {
     render(
       <BrowserRouter>
         <AuthProvider>
@@ -28,9 +28,18 @@ describe('Login', () => {
       </BrowserRouter>
     )
 
+    // Check for tab buttons (there are two: "Sign In" and "Request Access")
+    // We use getAllByRole to get both buttons
+    const tabButtons = screen.getAllByRole('button')
+    // Find the ones that look like tabs (by checking for specific text)
+    const signInTab = tabButtons.find(btn => btn.textContent?.trim() === 'Sign In')
+    const requestAccessTab = tabButtons.find(btn => btn.textContent?.trim() === 'Request Access')
+    expect(signInTab).toBeInTheDocument()
+    expect(requestAccessTab).toBeInTheDocument()
+    
+    // Check for form elements (default tab is "Sign In")
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()
   })
 
   it('shows error message on invalid credentials', async () => {
@@ -48,11 +57,14 @@ describe('Login', () => {
 
     const emailInput = screen.getByLabelText(/email/i)
     const passwordInput = screen.getByLabelText(/password/i)
-    const submitButton = screen.getByRole('button', { name: /sign in/i })
+    // Find the submit button (there are multiple buttons with "Sign In" text)
+    const buttons = screen.getAllByRole('button')
+    const submitButton = buttons.find(btn => btn.textContent?.trim() === 'Sign in')
+    expect(submitButton).toBeDefined()
 
     await userEvent.type(emailInput, 'test@example.com')
     await userEvent.type(passwordInput, 'wrongpassword')
-    await userEvent.click(submitButton)
+    await userEvent.click(submitButton!)
 
     await waitFor(() => {
       expect(screen.getByText(/invalid credentials/i)).toBeInTheDocument()
@@ -74,11 +86,14 @@ describe('Login', () => {
 
     const emailInput = screen.getByLabelText(/email/i)
     const passwordInput = screen.getByLabelText(/password/i)
-    const submitButton = screen.getByRole('button', { name: /sign in/i })
+    // Find the submit button (there are multiple buttons with "Sign In" text)
+    const buttons = screen.getAllByRole('button')
+    const submitButton = buttons.find(btn => btn.textContent?.trim() === 'Sign in')
+    expect(submitButton).toBeDefined()
 
     await userEvent.type(emailInput, 'test@example.com')
     await userEvent.type(passwordInput, 'correctpassword')
-    await userEvent.click(submitButton)
+    await userEvent.click(submitButton!)
 
     await waitFor(() => {
       expect(mockedApi.post).toHaveBeenCalledWith('/api/auth/login', {

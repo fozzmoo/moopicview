@@ -18,6 +18,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 export default function AdminDashboard() {
   const [users, setUsers] = useState<any[]>([]);
   const [proposedEdits, setProposedEdits] = useState<any[]>([]);
+  const [accountRequests, setAccountRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
@@ -34,12 +35,14 @@ export default function AdminDashboard() {
   const fetchAdminData = async () => {
     setLoading(true);
     try {
-      const [usersRes, editsRes] = await Promise.all([
+      const [usersRes, editsRes, requestsRes] = await Promise.all([
         api.get('/api/admin/users'),
-        api.get('/api/admin/proposed-edits')
+        api.get('/api/admin/proposed-edits'),
+        api.get('/api/admin/account-requests')
       ]);
       setUsers(usersRes.data);
       setProposedEdits(editsRes.data);
+      setAccountRequests(requestsRes.data);
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
     }
@@ -52,6 +55,15 @@ export default function AdminDashboard() {
       fetchAdminData(); // Refresh data
     } catch (err) {
       console.error('Failed to approve user:', err);
+    }
+  };
+
+  const reviewAccountRequest = async (requestId: number, status: string) => {
+    try {
+      await api.post(`/api/admin/account-requests/${requestId}/review`, { status });
+      fetchAdminData(); // Refresh data
+    } catch (err) {
+      console.error('Failed to review account request:', err);
     }
   };
 
@@ -198,6 +210,48 @@ export default function AdminDashboard() {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Account Requests Section */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Account Requests</CardTitle>
+            <CardDescription>Pending requests for new user accounts</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {accountRequests.length === 0 ? (
+              <p className="text-muted-foreground">No pending account requests.</p>
+            ) : (
+              <div className="space-y-4">
+                {accountRequests.map(request => (
+                  <div key={request.id} className="p-4 border rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <p className="font-medium">{request.name}</p>
+                        <p className="text-sm text-muted-foreground">{request.email}</p>
+                      </div>
+                      <Badge variant={request.status === "pending" ? "secondary" : "default"}>
+                        {request.status}
+                      </Badge>
+                    </div>
+                    {request.message && (
+                      <p className="text-sm mb-3 p-2 bg-muted rounded">{request.message}</p>
+                    )}
+                    {request.status === "pending" && (
+                      <div className="flex gap-2">
+                        <Button variant="default" size="sm" onClick={() => reviewAccountRequest(request.id, "approved")}>
+                          Approve
+                        </Button>
+                        <Button variant="destructive" size="sm" onClick={() => reviewAccountRequest(request.id, "rejected")}>
+                          Reject
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 

@@ -60,6 +60,7 @@ func main() {
 			filepath TEXT UNIQUE NOT NULL,
 			filename TEXT NOT NULL,
 			collection TEXT NOT NULL,
+			folder_id INTEGER,
 			scan_date DATE,
 			photo_date DATE,
 			date_precision VARCHAR(10) DEFAULT 'unknown',
@@ -69,8 +70,58 @@ func main() {
 			width INTEGER,
 			height INTEGER,
 			imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
+		);
 
+		CREATE TABLE IF NOT EXISTS folders (
+			id SERIAL PRIMARY KEY,
+			path TEXT UNIQUE NOT NULL,
+			name TEXT NOT NULL,
+			parent_path TEXT,
+			collection_type TEXT NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS tags (
+			id SERIAL PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS photo_tags (
+			photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+			tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+			PRIMARY KEY (photo_id, tag_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS comments (
+			id SERIAL PRIMARY KEY,
+			photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			content TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE IF NOT EXISTS proposed_edits (
+			id SERIAL PRIMARY KEY,
+			photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			field TEXT NOT NULL,
+			proposed_value TEXT,
+			current_value TEXT,
+			status TEXT DEFAULT 'pending',
+			reviewed_by INTEGER REFERENCES users(id),
+			reviewed_at TIMESTAMP,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS activity_logs (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			action TEXT NOT NULL,
+			entity_type TEXT,
+			entity_id INTEGER,
+			details TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	if err != nil {
 		log.Fatal(err)

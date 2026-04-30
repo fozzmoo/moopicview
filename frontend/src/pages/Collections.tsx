@@ -6,6 +6,7 @@ import { Navbar } from '../components/navbar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
+import { formatDate } from '@/lib/dateUtils';
 
 export default function Collections() {
   const location = useLocation();
@@ -15,6 +16,7 @@ export default function Collections() {
   const [currentFolder, setCurrentFolder] = useState<any>(null);
   const [directories, setDirectories] = useState<any[]>([]);
   const [photos, setPhotos] = useState<any[]>([]);
+  const [breadcrumbs, setBreadcrumbs] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -38,6 +40,7 @@ export default function Collections() {
       setCurrentFolder(null);
       setDirectories([]);
       setPhotos([]);
+      setBreadcrumbs([]);
       setView('collections');
     } catch (err) {
       console.error('Failed to fetch collections:', err);
@@ -52,6 +55,7 @@ export default function Collections() {
       setCurrentFolder(res.data.folder);
       setDirectories(res.data.directories || []);
       setPhotos(res.data.photos || []);
+      setBreadcrumbs(res.data.breadcrumbs || []);
       setView('folders');
     } catch (err) {
       console.error('Failed to load folder:', err);
@@ -122,9 +126,22 @@ export default function Collections() {
                   Back to Collections
                 </Button>
                 <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Link to="/collections" className="hover:text-foreground">Collections</Link>
-                  <span className="text-muted-foreground/50">/</span>
-                  <span className="text-foreground font-medium">{currentFolder.name}</span>
+                  {breadcrumbs.map((crumb, index) => (
+                    <span key={crumb.id || index}>
+                      {index > 0 && <span className="text-muted-foreground/50">/</span>}
+                      {crumb.id === 0 ? (
+                        <Link to={`/collections`} className="hover:text-foreground">
+                          {crumb.name}
+                        </Link>
+                      ) : crumb.id > 0 ? (
+                        <Link to={`/collections/${crumb.id}`} className="hover:text-foreground">
+                          {crumb.name}
+                        </Link>
+                      ) : (
+                        <span className="text-foreground font-medium">{crumb.name}</span>
+                      )}
+                    </span>
+                  ))}
                   <span className="text-muted-foreground ml-1">
                     ({getCollectionTypeLabel(currentFolder.collection_type)})
                   </span>
@@ -192,7 +209,7 @@ export default function Collections() {
                         <CardContent className="p-3">
                           <p className="text-sm font-medium truncate">{photo.filename}</p>
                           <p className="text-xs text-muted-foreground mt-1">
-                            {photo.photo_date || 'Unknown date'}
+                            {formatDate(photo.photo_date, photo.date_precision)}
                           </p>
                         </CardContent>
                       </Card>

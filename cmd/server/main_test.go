@@ -53,6 +53,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 			filepath VARCHAR(500) UNIQUE NOT NULL,
 			filename VARCHAR(255) NOT NULL,
 			collection VARCHAR(20),
+			folder_id INTEGER,
 			photo_date DATE,
 			date_precision VARCHAR(10),
 			date_source VARCHAR(20),
@@ -626,5 +627,98 @@ func TestAdminPhotoDateHandler(t *testing.T) {
 
 	if w3.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400 for invalid precision, got %d", w3.Code)
+	}
+}
+
+// Test photo content handler
+func TestPhotoContentHandler(t *testing.T) {
+	// Setup
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Set environment variable for database URL
+	testDBURL := os.Getenv("TEST_DATABASE_URL")
+	if testDBURL == "" {
+		testDBURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+	}
+	os.Setenv("DATABASE_URL", testDBURL)
+	defer os.Unsetenv("DATABASE_URL")
+
+	// Use a file path that exists in the container's mounted volume
+	testImagePath := "/opt/mooview/digital/2025/20250704/P2430777.JPG"
+	
+	// Verify the file exists
+	if _, err := os.Stat(testImagePath); os.IsNotExist(err) {
+		t.Skip("Test file not found, skipping test")
+	}
+
+	// Insert a test photo with the existing file path
+	_, err := db.Exec(`
+		INSERT INTO photos (filepath, filename, collection, photo_date, date_precision, date_source, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (filepath) DO NOTHING
+	`, testImagePath, "P2430777.JPG", "digital", "2025-07-04", "exact", "exif", "Test photo")
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+
+	// Get the photo ID
+	var photoID int
+	err = db.QueryRow("SELECT id FROM photos WHERE filepath = $1", testImagePath).Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to get photo ID: %v", err)
+	}
+
+	t.Logf("Test photo ID: %d, path: %s", photoID, testImagePath)
+
+	// Verify the photo exists in the database using the same connection method as the handler
+	testDB, dbErr := sql.Open("postgres", testDBURL)
+	if dbErr != nil {
+		t.Fatalf("Failed to connect to test database: %v", dbErr)
+	}
+	defer testDB.Close()
+
+	var verifyPath string
+	err = testDB.QueryRow("SELECT filepath FROM photos WHERE id = $1", photoID).Scan(&verifyPath)
+	if err != nil {
+		t.Fatalf("Failed to verify photo in database: %v", err)
+	}
+	t.Logf("Verified photo path in database: %s", verifyPath)
+
+	// Test the photo content handler
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/photos/%d/content", photoID), nil)
+	vars := map[string]string{"id": fmt.Sprintf("%d", photoID)}
+	req = mux.SetURLVars(req, vars)
+	w := httptest.NewRecorder()
+
+	photoContentHandler(w, req)
+
+	t.Logf("Response status: %d, body: %s", w.Code, w.Body.String())
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify content type
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "image/jpeg" {
+		t.Errorf("Expected Content-Type 'image/jpeg', got '%s'", contentType)
+	}
+
+	// Verify content
+	if len(w.Body.Bytes()) == 0 {
+		t.Errorf("Expected photo content, got empty body")
+	}
+
+	// Test with non-existent photo ID
+	req2 := httptest.NewRequest("GET", "/api/photos/99999/content", nil)
+	vars2 := map[string]string{"id": "99999"}
+	req2 = mux.SetURLVars(req2, vars2)
+	w2 := httptest.NewRecorder()
+
+	photoContentHandler(w2, req2)
+
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent photo, got %d", w2.Code)
 	}
 }

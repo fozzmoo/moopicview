@@ -23,6 +23,7 @@ export default function PhotoView() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [photo, setPhoto] = useState<any>(null);
+  const [breadcrumbs, setBreadcrumbs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [editDate, setEditDate] = useState('');
@@ -34,7 +35,8 @@ export default function PhotoView() {
     const fetchData = async () => {
       try {
         const photoRes = await api.get(`/api/photos/${id}`);
-        setPhoto(photoRes.data);
+        setPhoto(photoRes.data.photo);
+        setBreadcrumbs(photoRes.data.breadcrumbs || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -158,7 +160,8 @@ export default function PhotoView() {
       });
       // Refresh photo data
       const photoRes = await api.get(`/api/photos/${id}`);
-      setPhoto(photoRes.data);
+      setPhoto(photoRes.data.photo);
+      setBreadcrumbs(photoRes.data.breadcrumbs || []);
       setIsEditingDate(false);
       setDateError('');
     } catch (err) {
@@ -174,7 +177,8 @@ export default function PhotoView() {
       });
       // Refresh photo data
       const photoRes = await api.get(`/api/photos/${id}`);
-      setPhoto(photoRes.data);
+      setPhoto(photoRes.data.photo);
+      setBreadcrumbs(photoRes.data.breadcrumbs || []);
       setIsEditingDescription(false);
     } catch (err) {
       console.error('Failed to update photo description:', err);
@@ -190,15 +194,22 @@ export default function PhotoView() {
       <Navbar />
       <div className="container mx-auto px-4 py-6">
         <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
-          <Link to="/collections" className="hover:text-foreground">Collections</Link>
-          {photo.folder_id && (
-            <>
-              <span className="text-muted-foreground/50">/</span>
-              <Link to={`/collections/${photo.folder_id}`} className="hover:text-foreground">
-                {photo.folder_name}
-              </Link>
-            </>
-          )}
+          {breadcrumbs.map((crumb, index) => (
+            <span key={crumb.id || index}>
+              {index > 0 && <span className="text-muted-foreground/50">/</span>}
+              {crumb.id === 0 ? (
+                <Link to={`/collections`} className="hover:text-foreground">
+                  {crumb.name}
+                </Link>
+              ) : crumb.id > 0 ? (
+                <Link to={`/collections/${crumb.id}`} className="hover:text-foreground">
+                  {crumb.name}
+                </Link>
+              ) : (
+                <span className="text-foreground font-medium">{crumb.name}</span>
+              )}
+            </span>
+          ))}
           {photo && (
             <span className="text-muted-foreground ml-1">
               ({photo.collection === 'digital' ? 'Digital' : 'Scanned'})

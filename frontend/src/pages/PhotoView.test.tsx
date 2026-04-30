@@ -31,16 +31,22 @@ describe('PhotoView', () => {
   it('renders photo details', async () => {
     mockedApi.get.mockResolvedValueOnce({
       data: {
-        id: 1,
-        filename: 'test-photo.jpg',
-        folder_id: 1,
-        folder_name: 'Test Folder',
-        photo_date: '2023-01-15',
-        description: 'Test description',
-        content_url: '/api/photos/1/content',
-        collection: 'digital',
-        prev_photo_id: null,
-        next_photo_id: 2
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [
+          { id: 0, name: 'Collections', path: '' },
+          { id: 1, name: 'Test Folder', path: '/test/path' }
+        ]
       }
     })
 
@@ -94,16 +100,22 @@ describe('PhotoView', () => {
   it('handles download button click', async () => {
     mockedApi.get.mockResolvedValueOnce({
       data: {
-        id: 1,
-        filename: 'test-photo.jpg',
-        folder_id: 1,
-        folder_name: 'Test Folder',
-        photo_date: '2023-01-15',
-        description: 'Test description',
-        content_url: '/api/photos/1/content',
-        collection: 'digital',
-        prev_photo_id: null,
-        next_photo_id: 2
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [
+          { id: 0, name: 'Collections', path: '' },
+          { id: 1, name: 'Test Folder', path: '/test/path' }
+        ]
       }
     })
 
@@ -139,16 +151,22 @@ describe('PhotoView', () => {
   it('displays navigation buttons for prev/next photos', async () => {
     mockedApi.get.mockResolvedValueOnce({
       data: {
-        id: 1,
-        filename: 'test-photo.jpg',
-        folder_id: 1,
-        folder_name: 'Test Folder',
-        photo_date: '2023-01-15',
-        description: 'Test description',
-        content_url: '/api/photos/1/content',
-        collection: 'digital',
-        prev_photo_id: null,
-        next_photo_id: 2
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [
+          { id: 0, name: 'Collections', path: '' },
+          { id: 1, name: 'Test Folder', path: '/test/path' }
+        ]
       }
     })
 

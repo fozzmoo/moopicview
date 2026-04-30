@@ -1,13 +1,18 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"math/big"
+	"net"
 	"net/http"
+	"net/smtp"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,10 +27,60 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 var cliMode = false
 var jwtSecret = []byte("supersecret123changeinprod")
+
+// OAuth2 configuration
+var oauthConfig *oauth2.Config
+
+func initOAuth() {
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	
+	if clientID == "" || clientID == "your-google-oauth-client-id" {
+		log.Printf("Warning: GOOGLE_CLIENT_ID not set, Google OAuth will not work. Set it in .env file.")
+		return
+	}
+	if clientSecret == "" || clientSecret == "your-google-oauth-client-secret" {
+		log.Printf("Warning: GOOGLE_CLIENT_SECRET not set, Google OAuth will not work. Set it in .env file.")
+		return
+	}
+
+	// Determine the redirect URL based on environment
+	redirectURL := os.Getenv("GOOGLE_REDIRECT_URL")
+	if redirectURL == "" {
+		// Try to determine from other env vars or use localhost default
+		listenAddr := os.Getenv("LISTEN_ADDR")
+		if listenAddr != "" && listenAddr != ":8080" {
+			// Extract host from LISTEN_ADDR
+			host := strings.Split(listenAddr, ":")[0]
+			if host != "" {
+				redirectURL = fmt.Sprintf("http://%s:8080/api/auth/google/callback", host)
+			} else {
+				redirectURL = "http://localhost:8080/api/auth/google/callback"
+			}
+		} else {
+			redirectURL = "http://localhost:8080/api/auth/google/callback"
+		}
+	}
+
+	oauthConfig = &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Scopes: []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+		},
+		Endpoint: google.Endpoint,
+	}
+	
+	log.Printf("Google OAuth configured with redirect URL: %s", redirectURL)
+}
 
 type Claims struct {
 	Email string `json:"email"`
@@ -104,6 +159,9 @@ func main() {
 
 	godotenv.Load()
 
+	// Initialize OAuth configuration
+	initOAuth()
+
 	if len(os.Args) > 1 && os.Args[1] == "scan" {
 		cliMode = true
 		scanPhotos()
@@ -119,6 +177,9 @@ func main() {
 
 	// API routes (registered before catch-all)
 	r.HandleFunc("/api/auth/login", loginHandler).Methods("POST")
+	r.HandleFunc("/api/auth/google", googleAuthHandler).Methods("GET")
+	r.HandleFunc("/api/auth/google/callback", googleAuthCallbackHandler).Methods("GET")
+	r.HandleFunc("/api/auth/request-access", requestAccessHandler).Methods("POST")
 	r.HandleFunc("/api/auth/change-password", changePasswordHandler).Methods("POST")
 	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
@@ -137,6 +198,8 @@ func main() {
 	adminRouter.HandleFunc("/users/{id}/approve", adminUserApproveHandler).Methods("POST")
 	adminRouter.HandleFunc("/users/{id}/change-password", adminUserChangePasswordHandler).Methods("POST")
 	adminRouter.HandleFunc("/users/{id}/toggle-admin", adminUserToggleAdminHandler).Methods("POST")
+	adminRouter.HandleFunc("/account-requests", adminAccountRequestsHandler).Methods("GET")
+	adminRouter.HandleFunc("/account-requests/{id}/review", adminAccountRequestReviewHandler).Methods("POST")
 	adminRouter.HandleFunc("/proposed-edits", adminProposedEditsHandler).Methods("GET")
 	adminRouter.HandleFunc("/proposed-edits/{id}/review", adminProposedEditReviewHandler).Methods("POST")
 	adminRouter.HandleFunc("/photos/{id}/date", adminPhotoDateHandler).Methods("POST")
@@ -213,20 +276,258 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
 }
 
+func googleAuthHandler(w http.ResponseWriter, r *http.Request) {
+	if oauthConfig == nil {
+		http.Error(w, "Google OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate a random state token for CSRF protection
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		http.Error(w, "Failed to generate state", http.StatusInternalServerError)
+		return
+	}
+	state := fmt.Sprintf("%x", stateBytes)
+
+	// Store state in a cookie (short-lived)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300, // 5 minutes
+		HttpOnly: true,
+		Secure:   false, // Set to true in production
+	})
+
+	url := oauthConfig.AuthCodeURL(state)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func googleAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	if oauthConfig == nil {
+		http.Error(w, "Google OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify state token
+	state := r.URL.Query().Get("state")
+	cookie, err := r.Cookie("oauth_state")
+	if err != nil || cookie.Value != state {
+		http.Error(w, "Invalid state token", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange authorization code for tokens
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "No authorization code provided", http.StatusBadRequest)
+		return
+	}
+
+	token, err := oauthConfig.Exchange(r.Context(), code)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to exchange token: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Use the token to get user info
+	client := oauthConfig.Client(r.Context(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get user info: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	var userInfo struct {
+		Email         string `json:"email"`
+		Name          string `json:"name"`
+		Picture       string `json:"picture"`
+		VerifiedEmail bool   `json:"verified_email"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
+		return
+	}
+
+	if !userInfo.VerifiedEmail {
+		http.Error(w, "Email not verified", http.StatusBadRequest)
+		return
+	}
+
+	// Check if user already exists
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	var existingUser struct {
+		ID       int
+		Approved bool
+		Role     string
+	}
+
+	err = db.QueryRow("SELECT id, approved, role FROM users WHERE email = $1", userInfo.Email).Scan(
+		&existingUser.ID, &existingUser.Approved, &existingUser.Role)
+
+	if err != nil {
+		// User doesn't exist, create a new user
+		_, err = db.Exec(`
+			INSERT INTO users (email, name, role, approved, created_at)
+			VALUES ($1, $2, 'user', false, CURRENT_TIMESTAMP)
+			ON CONFLICT (email) DO NOTHING
+		`, userInfo.Email, userInfo.Name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Get the newly created user
+		err = db.QueryRow("SELECT id, approved, role FROM users WHERE email = $1", userInfo.Email).Scan(
+			&existingUser.ID, &existingUser.Approved, &existingUser.Role)
+		if err != nil {
+			http.Error(w, "Failed to get user after creation", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Check if user is approved
+	if !existingUser.Approved {
+		http.Error(w, "Account not approved. Please wait for admin approval.", http.StatusUnauthorized)
+		return
+	}
+
+	// Create JWT token
+	tokenStr := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
+		Email: userInfo.Email,
+		Role:  existingUser.Role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+		},
+	})
+	tokenString, _ := tokenStr.SignedString(jwtSecret)
+
+	// Set JWT in http-only cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "jwt",
+		Value:    tokenString,
+		Path:     "/",
+		MaxAge:   24 * 60 * 60, // 24 hours
+		HttpOnly: true,
+		Secure:   false, // Set to true in production
+	})
+
+	// Redirect to collections page
+	http.Redirect(w, r, "/collections", http.StatusFound)
+}
+
+// sendEmail sends an email using SMTP with SSL/TLS
+func sendEmail(to, subject, body string) error {
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := os.Getenv("SMTP_PORT")
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPass := os.Getenv("SMTP_PASS")
+
+	if smtpHost == "" || smtpPort == "" || smtpUser == "" || smtpPass == "" {
+		log.Printf("Warning: SMTP configuration incomplete. Cannot send email to %s", to)
+		return fmt.Errorf("SMTP configuration incomplete")
+	}
+
+	// Parse port
+	port, err := strconv.Atoi(smtpPort)
+	if err != nil {
+		return fmt.Errorf("invalid SMTP port: %v", err)
+	}
+
+	// Construct email message
+	from := smtpUser
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s", from, to, subject, body)
+
+	// Connect to SMTP server with TLS
+	auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
+	tlsConfig := &tls.Config{
+		ServerName: smtpHost,
+	}
+
+	// For port 465, we typically use implicit TLS
+	// For port 587, we use STARTTLS
+	var conn net.Conn
+	var err2 error
+
+	if port == 465 {
+		conn, err2 = tls.Dial("tcp", fmt.Sprintf("%s:%d", smtpHost, port), tlsConfig)
+	} else {
+		// For other ports (like 587), we'd use STARTTLS
+		// For simplicity, we'll try direct TLS for 465, and fail for others in this basic impl
+		return fmt.Errorf("only port 465 (SSL/TLS) is currently supported in this implementation")
+	}
+
+	if err2 != nil {
+		return fmt.Errorf("failed to connect to SMTP server: %v", err2)
+	}
+	defer conn.Close()
+
+	// Create SMTP client
+	client, err := smtp.NewClient(conn, smtpHost)
+	if err != nil {
+		return fmt.Errorf("failed to create SMTP client: %v", err)
+	}
+	defer client.Close()
+
+	// Authenticate
+	if err := client.Auth(auth); err != nil {
+		return fmt.Errorf("SMTP authentication failed: %v", err)
+	}
+
+	// Set sender and recipient
+	if err := client.Mail(from); err != nil {
+		return fmt.Errorf("failed to set sender: %v", err)
+	}
+	if err := client.Rcpt(to); err != nil {
+		return fmt.Errorf("failed to set recipient: %v", err)
+	}
+
+	// Send data
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("failed to get data writer: %v", err)
+	}
+	_, err = w.Write([]byte(msg))
+	if err != nil {
+		return fmt.Errorf("failed to write message: %v", err)
+	}
+	w.Close()
+
+	log.Printf("Email sent successfully to %s", to)
+	return nil
+}
+
 func spaHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api") {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Determine frontend dist path
+	frontendDist := os.Getenv("FRONTEND_DIST")
+	if frontendDist == "" {
+		// Default to relative path for local development
+		frontendDist = "../../frontend/dist"
+	}
+
 	// Handle all routes that should serve index.html
-	if r.URL.Path == "/" || r.URL.Path == "/login" || 
-	   r.URL.Path == "/collections" || strings.HasPrefix(r.URL.Path, "/collections/") ||
-	   strings.HasPrefix(r.URL.Path, "/photo") || 
-	   r.URL.Path == "/account" || r.URL.Path == "/admin" {
-		http.ServeFile(w, r, "../../frontend/dist/index.html")
+	if r.URL.Path == "/" || r.URL.Path == "/login" ||
+		r.URL.Path == "/collections" || strings.HasPrefix(r.URL.Path, "/collections/") ||
+		strings.HasPrefix(r.URL.Path, "/photo") ||
+		r.URL.Path == "/account" || r.URL.Path == "/admin" {
+		http.ServeFile(w, r, filepath.Join(frontendDist, "index.html"))
 		return
 	}
-	http.FileServer(http.Dir("../../frontend/dist")).ServeHTTP(w, r)
+	http.FileServer(http.Dir(frontendDist)).ServeHTTP(w, r)
 }
 
 func collectionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -252,12 +553,17 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 			path = strings.TrimSpace(parts[0])
 		}
 
-		// Get the folder ID for this path
+		// Get the folder ID for this path, inserting if necessary
 		var folderID int
 		var name string
-		err := db.QueryRow(`SELECT id, name FROM folders WHERE path = $1`, path).Scan(&folderID, &name)
+		err := db.QueryRow(`
+			INSERT INTO folders (path, name, parent_path, collection_type)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
+			RETURNING id, name
+		`, path, filepath.Base(path), filepath.Dir(path), collectionType).Scan(&folderID, &name)
 		if err != nil {
-			// Folder not found, skip
+			log.Printf("Error getting/inserting folder %s: %v", path, err)
 			continue
 		}
 
@@ -286,6 +592,62 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 
+
+func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email   string `json:"email"`
+		Name    string `json:"name"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.Email == "" || req.Name == "" {
+		http.Error(w, "Email and name are required", http.StatusBadRequest)
+		return
+	}
+
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	// Check if user already exists
+	var existingUser int
+	err = db.QueryRow("SELECT id FROM users WHERE email = $1", req.Email).Scan(&existingUser)
+	if err == nil {
+		http.Error(w, "Email already registered", http.StatusBadRequest)
+		return
+	}
+
+	// Check if account request already exists
+	var existingRequest int
+	err = db.QueryRow("SELECT id FROM account_requests WHERE email = $1", req.Email).Scan(&existingRequest)
+	if err == nil {
+		http.Error(w, "Account request already submitted", http.StatusBadRequest)
+		return
+	}
+
+	// Create account request
+	_, err = db.Exec(`
+		INSERT INTO account_requests (email, name, message, status)
+		VALUES ($1, $2, $3, 'pending')
+	`, req.Email, req.Name, req.Message)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// TODO: Send email to admins notifying them of the new request
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "request submitted"})
+}
 
 func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	tokenString := r.Header.Get("Authorization")
@@ -449,13 +811,51 @@ func scanPhotos() {
 					}
 				}
 
+				// Determine folder path and ID
+				dirPath := filepath.Dir(fullPath)
+				
+				// First, ensure the immediate parent folder exists and get its ID
+				var folderID int
+				err = db.QueryRow(`
+					INSERT INTO folders (path, name, parent_path, collection_type)
+					VALUES ($1, $2, $3, $4)
+					ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
+					RETURNING id
+				`, dirPath, filepath.Base(dirPath), filepath.Dir(dirPath), photoType).Scan(&folderID)
+				if err != nil {
+					log.Printf("Error inserting folder %s: %v", dirPath, err)
+					return nil
+				}
+				
+				// Insert all parent directories recursively (for folder navigation)
+				currentPath := filepath.Dir(dirPath)
+				for {
+					if currentPath == "/" || currentPath == "." || currentPath == path {
+						break
+					}
+					parentPath := filepath.Dir(currentPath)
+					
+					// Insert parent folder (ignore return value)
+					_, err = db.Exec(`
+						INSERT INTO folders (path, name, parent_path, collection_type)
+						VALUES ($1, $2, $3, $4)
+						ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
+					`, currentPath, filepath.Base(currentPath), parentPath, photoType)
+					if err != nil {
+						log.Printf("Error inserting parent folder %s: %v", currentPath, err)
+					}
+					
+					currentPath = parentPath
+				}
+
 				_, err = db.Exec(`
-					INSERT INTO photos (filepath, filename, collection, scan_date, photo_date, date_precision, date_source, description)
-					VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7)
+					INSERT INTO photos (filepath, filename, collection, folder_id, scan_date, photo_date, date_precision, date_source, description)
+					VALUES ($1, $2, $3, $4, CURRENT_DATE, $5, $6, $7, $8)
 					ON CONFLICT (filepath) DO UPDATE SET
 						filename = EXCLUDED.filename,
+						folder_id = EXCLUDED.folder_id,
 						scan_date = CURRENT_DATE
-				`, fullPath, name, photoType, photoDate, datePrecision, dateSource, "Scanned photo")
+				`, fullPath, name, photoType, folderID, photoDate, datePrecision, dateSource, "Scanned photo")
 				if err == nil {
 					log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s, source=%s)", name, photoType, photoDate.String, datePrecision, dateSource)
 				} else {
@@ -637,7 +1037,68 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
    		http.Error(w, "Photo not found", http.StatusNotFound)
    		return
    	}
-  	photo.ContentURL = fmt.Sprintf("/api/photos/%d/content", photo.ID)
+   	photo.ContentURL = fmt.Sprintf("/api/photos/%d/content", photo.ID)
+
+	// Get breadcrumbs (parent folders) for the photo's folder
+	breadcrumbs := []map[string]interface{}{
+		{"id": 0, "name": "Collections", "path": ""},
+	}
+	if photo.FolderID != nil {
+		// Get the folder path first
+		var folderPath string
+		err = db.QueryRow("SELECT path FROM folders WHERE id = $1", *photo.FolderID).Scan(&folderPath)
+		if err == nil {
+			// Build breadcrumb path from root to current
+			currentPath := folderPath
+			parentPaths := []map[string]interface{}{}
+			
+			for {
+				parentPath := filepath.Dir(currentPath)
+				if parentPath == "/" || parentPath == "." || parentPath == currentPath {
+					break
+				}
+				
+				var parentFolder struct {
+					ID   int    `json:"id"`
+					Name string `json:"name"`
+					Path string `json:"path"`
+				}
+				err := db.QueryRow(`
+					SELECT id, name, path
+					FROM folders
+					WHERE path = $1
+				`, parentPath).Scan(&parentFolder.ID, &parentFolder.Name, &parentFolder.Path)
+				if err != nil {
+					// Parent folder not found
+					break
+				}
+				
+				parentPaths = append([]map[string]interface{}{
+					{"id": parentFolder.ID, "name": parentFolder.Name, "path": parentFolder.Path},
+				}, parentPaths...)
+				
+				currentPath = parentPath
+			}
+			
+			// Add parent paths to breadcrumbs
+			breadcrumbs = append(breadcrumbs, parentPaths...)
+			
+			// Add current folder (the photo's folder) at the end
+			var photoFolder struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+				Path string `json:"path"`
+			}
+			err = db.QueryRow("SELECT id, name, path FROM folders WHERE id = $1", *photo.FolderID).Scan(&photoFolder.ID, &photoFolder.Name, &photoFolder.Path)
+			if err == nil {
+				breadcrumbs = append(breadcrumbs, map[string]interface{}{
+					"id":   photoFolder.ID,
+					"name": photoFolder.Name,
+					"path": photoFolder.Path,
+				})
+			}
+		}
+	}
 
 	// Get previous and next photos in the same folder
 	if photo.FolderID != nil {
@@ -665,7 +1126,10 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(photo)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"photo":       photo,
+		"breadcrumbs": breadcrumbs,
+	})
 }
 
 func scanHandler(w http.ResponseWriter, r *http.Request) {
@@ -766,6 +1230,78 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get breadcrumbs (parent folders)
+	// Start with an empty list and build from root to current
+	breadcrumbs := []map[string]interface{}{
+		{"id": 0, "name": "Collections", "path": ""},
+	}
+	
+	// Get the root collection for this folder
+	// The root collection is the first folder in the path hierarchy
+	// For example, /opt/mooview/scanned/2026/20260118-DadsDragRacing
+	// The root collection is "scanned" at /opt/mooview/scanned
+	currentPath := folder.Path
+	var pathParts []string
+	
+	// Split path into parts
+	for {
+		if currentPath == "/" || currentPath == "." {
+			break
+		}
+		pathParts = append([]string{filepath.Base(currentPath)}, pathParts...)
+		currentPath = filepath.Dir(currentPath)
+	}
+	
+	// Build breadcrumb path from root to current
+	// For /opt/mooview/scanned/2026/20260118-DadsDragRacing
+	// We want: Collections -> scanned -> 2026 -> 20260118-DadsDragRacing
+	// But we need to find the root collection first
+	// The root collection is the one in PHOTO_ROOTS (e.g., /opt/mooview/scanned)
+	// We need to find which folder in the path is a root collection
+	
+	// For now, let's just traverse up from the current folder and find all parent folders
+	// that exist in the database
+	currentPath = folder.Path
+	parentPaths := []map[string]interface{}{}
+	
+	for {
+		parentPath := filepath.Dir(currentPath)
+		if parentPath == "/" || parentPath == "." || parentPath == currentPath {
+			break
+		}
+		
+		var parentFolder struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		err := db.QueryRow(`
+			SELECT id, name, path
+			FROM folders
+			WHERE path = $1
+		`, parentPath).Scan(&parentFolder.ID, &parentFolder.Name, &parentFolder.Path)
+		if err != nil {
+			// Parent folder not found
+			break
+		}
+		
+		parentPaths = append([]map[string]interface{}{
+			{"id": parentFolder.ID, "name": parentFolder.Name, "path": parentFolder.Path},
+		}, parentPaths...)
+		
+		currentPath = parentPath
+	}
+	
+	// Add parent paths to breadcrumbs
+	breadcrumbs = append(breadcrumbs, parentPaths...)
+	
+	// Add current folder at the end
+	breadcrumbs = append(breadcrumbs, map[string]interface{}{
+		"id":   folder.ID,
+		"name": folder.Name,
+		"path": folder.Path,
+	})
+
 	// Get subdirectories
 	rows, err := db.Query(`
 		SELECT id, path, name, collection_type
@@ -792,7 +1328,7 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Get photos in this folder
+	// Get photos in this folder only (not subfolders)
 	photoRows, err := db.Query(`
 		SELECT id, filepath, filename, collection, photo_date::text, date_precision
 		FROM photos
@@ -825,6 +1361,7 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 		"folder":       folder,
 		"directories":  directories,
 		"photos":       photos,
+		"breadcrumbs":  breadcrumbs,
 	})
 }
 
@@ -1232,4 +1769,154 @@ func adminPhotoDescriptionHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "description updated"})
+}
+
+// Admin handlers for account requests
+func adminAccountRequestsHandler(w http.ResponseWriter, r *http.Request) {
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT id, email, name, message, status, created_at 
+		FROM account_requests 
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	requests := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var id int
+		var email, name, message, status string
+		var createdAt time.Time
+		rows.Scan(&id, &email, &name, &message, &status, &createdAt)
+		requests = append(requests, map[string]interface{}{
+			"id":         id,
+			"email":      email,
+			"name":       name,
+			"message":    message,
+			"status":     status,
+			"created_at": createdAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(requests)
+}
+
+func adminAccountRequestReviewHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	var req struct {
+		Status string `json:"status"` // "approved" or "rejected"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	if req.Status != "approved" && req.Status != "rejected" {
+		http.Error(w, "Status must be 'approved' or 'rejected'", http.StatusBadRequest)
+		return
+	}
+
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	// Get the account request details
+	var email, name string
+	err = db.QueryRow("SELECT email, name FROM account_requests WHERE id = $1", id).Scan(&email, &name)
+	if err != nil {
+		http.Error(w, "Account request not found", http.StatusNotFound)
+		return
+	}
+
+	// If approved, create the user account
+	if req.Status == "approved" {
+		// Generate a random password
+		randomPassword, err := generateRandomPassword()
+		if err != nil {
+			http.Error(w, "Failed to generate password", http.StatusInternalServerError)
+			return
+		}
+
+		// Hash the password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(randomPassword), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+			return
+		}
+
+		// Create the user
+		_, err = db.Exec(`
+			INSERT INTO users (email, name, password_hash, role, approved)
+			VALUES ($1, $2, $3, 'user', true)
+		`, email, name, string(hashedPassword))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Send email notification
+		subject := "MoopicView Account Approved"
+		body := fmt.Sprintf(`
+			<html>
+			<body>
+				<h1>MoopicView Account Approved</h1>
+				<p>Hello %s,</p>
+				<p>Your account request for MoopicView has been approved.</p>
+				<p>You can now log in using your email address and the following password:</p>
+				<p><strong>Password:</strong> %s</p>
+				<p>Please change your password after logging in for the first time.</p>
+				<p><a href="http://localhost:8080/login">Login to MoopicView</a></p>
+				<p>Best regards,<br>MoopicView Admin</p>
+			</body>
+			</html>
+		`, name, randomPassword)
+
+		if err := sendEmail(email, subject, body); err != nil {
+			log.Printf("Failed to send approval email to %s: %v", email, err)
+			// We don't return an error here because the user was created successfully
+		}
+	}
+
+	// Update the account request status
+	_, err = db.Exec(`
+		UPDATE account_requests 
+		SET status = $1, reviewed_at = CURRENT_TIMESTAMP
+		WHERE id = $2
+	`, req.Status, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "request reviewed"})
+}
+
+func generateRandomPassword() (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	b := make([]byte, 12)
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			return "", err
+		}
+		b[i] = charset[idx.Int64()]
+	}
+	return string(b), nil
 }
