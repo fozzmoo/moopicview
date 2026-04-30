@@ -45,6 +45,21 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to create test tables: %v", err)
 	}
 
+	// Drop and recreate password_resets table
+	_, err = db.Exec(`
+		DROP TABLE IF EXISTS password_resets CASCADE;
+		CREATE TABLE password_resets (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			token TEXT UNIQUE NOT NULL,
+			expires_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create password_resets table: %v", err)
+	}
+
 	// Drop and recreate photos table
 	_, err = db.Exec(`
 		DROP TABLE IF EXISTS photos CASCADE;
@@ -64,6 +79,21 @@ func setupTestDB(t *testing.T) *sql.DB {
 	`)
 	if err != nil {
 		t.Fatalf("Failed to create photos table: %v", err)
+	}
+
+	// Drop and recreate comments table
+	_, err = db.Exec(`
+		DROP TABLE IF EXISTS comments CASCADE;
+		CREATE TABLE comments (
+			id SERIAL PRIMARY KEY,
+			photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			content TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create comments table: %v", err)
 	}
 
 	// Insert test user with proper bcrypt hash
@@ -720,5 +750,75 @@ func TestPhotoContentHandler(t *testing.T) {
 
 	if w2.Code != http.StatusNotFound {
 		t.Errorf("Expected status 404 for non-existent photo, got %d", w2.Code)
+	}
+}
+
+func TestAdminUserResetPasswordHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Create a test user
+	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
+	_, err := db.Exec(`
+		INSERT INTO users (email, password_hash, name, role, approved)
+		VALUES ($1, $2, $3, $4, $5)
+	`, "testuser@example.com", string(hashedPassword), "Test User", "user", true)
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Get the user ID
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE email = $1", "testuser@example.com").Scan(&userID)
+	if err != nil {
+		t.Fatalf("Failed to get user ID: %v", err)
+	}
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Create request to reset password
+	req := httptest.NewRequest("POST", "/api/admin/users/"+fmt.Sprint(userID)+"/reset-password", nil)
+	vars := map[string]string{"id": fmt.Sprint(userID)}
+	req = mux.SetURLVars(req, vars)
+	req.Header.Set("Authorization", "Bearer test-token")
+	w := httptest.NewRecorder()
+
+	adminUserResetPasswordHandler(w, req)
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify password reset token was created
+	var tokenCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM password_resets WHERE user_id = $1", userID).Scan(&tokenCount)
+	if err != nil {
+		t.Fatalf("Failed to query password_resets table: %v", err)
+	}
+	if tokenCount != 1 {
+		t.Errorf("Expected 1 password reset token, got %d", tokenCount)
+	}
+
+	// Test with non-existent user
+	req2 := httptest.NewRequest("POST", "/api/admin/users/99999/reset-password", nil)
+	vars2 := map[string]string{"id": "99999"}
+	req2 = mux.SetURLVars(req2, vars2)
+	req2.Header.Set("Authorization", "Bearer test-token")
+	w2 := httptest.NewRecorder()
+
+	adminUserResetPasswordHandler(w2, req2)
+
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent user, got %d. Body: %s", w2.Code, w2.Body.String())
 	}
 }

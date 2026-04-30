@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Login from './pages/Login';
+import ResetPassword from './pages/ResetPassword';
 import Collections from './pages/Collections';
 import PhotoView from './pages/PhotoView';
 import AdminDashboard from './pages/AdminDashboard';
@@ -26,6 +27,7 @@ function App() {
             <Router>
               <Routes>
                 <Route path="/login" element={<Login />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
                 <Route path="/collections" element={
                   <ProtectedRoute>
                     <Collections />

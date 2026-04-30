@@ -90,7 +90,7 @@ photos (
 tags (id, name) -- global shared tags
 photo_tags (photo_id, tag_id) -- many-to-many
 
-comments (id, photo_id, user_id, content, created_at, parent_id)
+comments (id, photo_id, user_id, content, created_at)
 
 proposed_edits (
   id, 
@@ -143,7 +143,8 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Admins can edit dates; users can propose date changes
 
 ### Admin Features
-- Create new user accounts (First name, Last name, Email, Password, Admin status)
+- Create new user accounts (First name, Last name, Email, Password [optional], Admin status). If no password is provided, a password reset link is emailed.
+- Delete user accounts (prevents deleting the last admin)
 - Manage users and pending account requests
 - Change user passwords
 - Toggle admin privileges for users
@@ -169,10 +170,10 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Vertical layout: Image takes full width, info panel below
   - Download functionality with proper filename handling
   - Navigation controls (previous/next) with keyboard shortcuts
-  - Action buttons: Add to favorites, Download, Share
-  - Metadata display: Collection, date, location, tags
+  - Metadata display: Collection, date, location
   - Smart date formatting based on precision (June 1989 instead of 1989-06-01)
   - Admin users can edit photo date directly from viewer
+  - **Comments**: List of comments from oldest to newest with user name and timestamp, plus form to post new comments (authenticated users only)
 - **Collections Interface**:
   - Card-based collection display with counts
   - Folder grid with hover effects
@@ -283,8 +284,9 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - `GET /api/photos` (search, pagination, filters)
 - `GET /api/photos/:id`
 - `GET /api/photos/:id/content` (protected image serve)
+- `GET /api/photos/:id/comments` (get comments for a photo)
+- `POST /api/photos/:id/comments` (add comment to a photo - requires auth)
 - `POST /api/photos/:id/tags`
-- `POST /api/photos/:id/comments`
 - `POST /api/photos/:id/propose-edit`
 
 **Admin:**
@@ -306,14 +308,17 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - ✅ `GET /api/collections` - List all collections with photo counts
 - ✅ `GET /api/collections/:id` - Get folder contents by ID
 - ✅ `GET /api/photos` - List recent photos (paginated)
-- ✅ `GET /api/photos/:id` - Get photo metadata (with prev/next navigation IDs)
+- ✅ `GET /api/photos/:id` - Get photo metadata (with prev/next navigation IDs and comments)
 - ✅ `GET /api/photos/:id/content` - Serve image file
+- ✅ `GET /api/photos/:id/comments` - Get comments for a photo
+- ✅ `POST /api/photos/:id/comments` - Add comment to a photo (requires auth)
 - ✅ `POST /api/scan` - Trigger photo scan
 - ✅ `GET /api/admin/users` - List all users (requires admin role)
 - ✅ `POST /api/admin/users` - Create new user account (requires admin role)
 - ✅ `POST /api/admin/users/:id/approve` - Approve user account (requires admin role)
 - ✅ `POST /api/admin/users/:id/change-password` - Change user password (requires admin role)
 - ✅ `POST /api/admin/users/:id/toggle-admin` - Toggle admin status (requires admin role)
+- ✅ `DELETE /api/admin/users/:id/delete` - Delete user account (requires admin role)
 - ✅ `GET /api/admin/proposed-edits` - List proposed edits (requires admin role)
 - ✅ `POST /api/admin/proposed-edits/:id/review` - Review proposed edit (requires admin role)
 - ✅ `POST /api/admin/photos/:id/date` - Edit photo date (requires admin role)
@@ -331,9 +336,11 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - ✅ Admin dashboard (user management, proposed edits review)
 - ✅ Create new users with admin checkbox
 - ✅ Toggle admin status for existing users
+- ✅ Delete user with confirmation dialog
 - ✅ TDD harness setup (Go tests + Vitest + Testing Library)
 - ✅ User account page
 - ✅ Previous/next navigation in photo viewer
+- ✅ Photo comments (view and post comments with timestamp)
 
 ## 8. Frontend Structure
 
@@ -432,7 +439,8 @@ cd frontend && npm run test
 - All file serving protected by auth middleware
 - Rate limiting on login and password reset
 - JWT expiration + refresh mechanism
-- Input sanitization (comments, descriptions)
+- Input sanitization (comments, descriptions) using bluemonday library to prevent XSS
+- Parameterized SQL queries to prevent SQL injection
 - No storage of sensitive data beyond necessities
 - Run container as least-privilege user with read-only access to `/unas` mount
 - CSP, XSS protection in React

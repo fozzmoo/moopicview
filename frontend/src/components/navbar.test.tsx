@@ -1,10 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
+
+// Mock useAuth before importing Navbar
+vi.mock('@/hooks/useAuth', () => ({
+  useAuth: vi.fn(() => ({ user: { role: 'admin' }, isAuthenticated: true })),
+}))
+
 import { Navbar } from './navbar'
 
 describe('Navbar', () => {
-  it('renders navigation links', () => {
+  it('renders navigation links for admin users', () => {
     render(
       <BrowserRouter>
         <Navbar />

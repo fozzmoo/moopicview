@@ -5,7 +5,6 @@ import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronR
 import { Navbar } from '../components/navbar';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { formatDate } from '@/lib/dateUtils';
 import { useAuth } from '@/hooks/useAuth';
@@ -24,12 +23,16 @@ export default function PhotoView() {
   const { user } = useAuth();
   const [photo, setPhoto] = useState<any>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<any[]>([]);
+  const [comments, setComments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [editDate, setEditDate] = useState('');
   const [dateError, setDateError] = useState('');
   const [isEditingDescription, setIsEditingDescription] = useState(false);
   const [editDescription, setEditDescription] = useState('');
+  const [newComment, setNewComment] = useState('');
+  const [commentError, setCommentError] = useState('');
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -37,6 +40,7 @@ export default function PhotoView() {
         const photoRes = await api.get(`/api/photos/${id}`);
         setPhoto(photoRes.data.photo);
         setBreadcrumbs(photoRes.data.breadcrumbs || []);
+        setComments(photoRes.data.comments || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -186,6 +190,31 @@ export default function PhotoView() {
     }
   };
 
+  const postComment = async () => {
+    if (!newComment.trim()) {
+      setCommentError('Comment cannot be empty');
+      return;
+    }
+
+    setIsSubmittingComment(true);
+    setCommentError('');
+
+    try {
+      const response = await api.post(`/api/photos/${id}/comments`, {
+        content: newComment
+      });
+      
+      // Add the new comment to the list
+      setComments([...comments, response.data]);
+      setNewComment('');
+    } catch (err: any) {
+      console.error('Failed to post comment:', err);
+      setCommentError(err.response?.data || 'Failed to post comment');
+    } finally {
+      setIsSubmittingComment(false);
+    }
+  };
+
   if (loading) return <div className="min-h-screen bg-background flex items-center justify-center">Loading...</div>;
   if (!photo) return <div className="min-h-screen bg-background flex items-center justify-center">Photo not found</div>;
 
@@ -311,30 +340,69 @@ export default function PhotoView() {
 
               <Card>
                 <CardContent className="p-6">
-                  <h3 className="font-semibold mb-3 text-sm text-foreground">Tags</h3>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant="outline">vacation</Badge>
-                    <Badge variant="outline">family</Badge>
-                    <Badge variant="outline">memories</Badge>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="p-6">
                   <h3 className="font-semibold mb-3 text-sm text-foreground">Actions</h3>
                   <div className="space-y-2">
-                    <Button variant="outline" className="w-full justify-start">
-                      Add to favorites
-                    </Button>
                     <Button variant="outline" className="w-full justify-start" onClick={handleDownload}>
                       <Download className="mr-2 h-4 w-4" />
                       Download
                     </Button>
-                    <Button variant="outline" className="w-full justify-start">
-                      Share
-                    </Button>
                   </div>
+                </CardContent>
+              </Card>
+
+              {/* Comments Section */}
+              <Card>
+                <CardContent className="p-6">
+                  <h3 className="font-semibold mb-4 text-sm text-foreground">Comments ({comments.length})</h3>
+                  
+                  {/* Comments List */}
+                  <div className="space-y-4 mb-6">
+                    {comments.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No comments yet</p>
+                    ) : (
+                      comments.map((comment) => (
+                        <div key={comment.id} className="border-b border-gray-200 pb-3 last:border-b-0">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-medium text-sm text-foreground">{comment.user_name}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(comment.created_at).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="text-sm text-foreground whitespace-pre-wrap">{comment.content}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Comment Form */}
+                  {user && (
+                    <div className="border-t pt-4">
+                      <textarea
+                        placeholder="Write a comment..."
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        className="w-full p-3 border border-input rounded-md bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                        rows={3}
+                      />
+                      {commentError && (
+                        <p className="text-sm text-red-500 mt-2">{commentError}</p>
+                      )}
+                      <div className="flex justify-end mt-2">
+                        <Button 
+                          onClick={postComment} 
+                          disabled={isSubmittingComment || !newComment.trim()}
+                          size="sm"
+                        >
+                          {isSubmittingComment ? 'Posting...' : 'Post Comment'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {!user && (
+                    <p className="text-sm text-muted-foreground border-t pt-4">
+                      <a href="/login" className="text-primary hover:underline">Log in</a> to leave a comment.
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             </div>

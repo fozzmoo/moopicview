@@ -3,6 +3,7 @@
 
 # Build artifacts
 cmd/server/moopicview
+server
 frontend/dist/
 
 # Dependencies

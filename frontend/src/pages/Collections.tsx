@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import api from '@/lib/api';
 import { Folder, Search, ArrowLeft } from 'lucide-react';
 import { Navbar } from '../components/navbar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -9,8 +9,8 @@ import { Badge } from '../components/ui/badge';
 import { formatDate } from '@/lib/dateUtils';
 
 export default function Collections() {
-  const location = useLocation();
   const navigate = useNavigate();
+  const params = useParams();
   const [view, setView] = useState<'collections' | 'folders'>('collections');
   const [collections, setCollections] = useState<any[]>([]);
   const [currentFolder, setCurrentFolder] = useState<any>(null);
@@ -21,8 +21,7 @@ export default function Collections() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const pathSegments = location.pathname.split('/').filter(Boolean);
-    const folderId = pathSegments.length > 1 ? parseInt(pathSegments[1]) : null;
+    const folderId = params.id ? parseInt(params.id) : null;
     
     if (folderId) {
       loadFolder(folderId);
@@ -30,12 +29,12 @@ export default function Collections() {
       loadCollections();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
+  }, [params.id]);
 
   const loadCollections = async () => {
     setLoading(true);
     try {
-      const res = await axios.get('/api/collections');
+      const res = await api.get('/api/collections');
       setCollections(res.data);
       setCurrentFolder(null);
       setDirectories([]);
@@ -51,7 +50,7 @@ export default function Collections() {
   const loadFolder = async (folderId: number) => {
     setLoading(true);
     try {
-      const res = await axios.get(`/api/collections/${folderId}`);
+      const res = await api.get(`/api/collections/${folderId}`);
       setCurrentFolder(res.data.folder);
       setDirectories(res.data.directories || []);
       setPhotos(res.data.photos || []);

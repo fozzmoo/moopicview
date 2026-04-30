@@ -23,10 +23,14 @@ export default function AdminDashboard() {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [createUserDialogOpen, setCreateUserDialogOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', email: '', password: '', isAdmin: false });
+  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', email: '', password: '', confirmPassword: '', isAdmin: false });
   const [createUserError, setCreateUserError] = useState('');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     fetchAdminData();
@@ -87,11 +91,17 @@ export default function AdminDashboard() {
       return;
     }
 
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError('Passwords do not match');
+      return;
+    }
+
     try {
       await api.post(`/api/admin/users/${selectedUserId}/change-password`, { newPassword });
       setPasswordDialogOpen(false);
       setSelectedUserId(null);
       setNewPassword('');
+      setConfirmNewPassword('');
     } catch (err) {
       console.error('Failed to change password:', err);
       setPasswordError('Failed to change password. Please try again.');
@@ -101,25 +111,41 @@ export default function AdminDashboard() {
   const openPasswordDialog = (userId: number) => {
     setSelectedUserId(userId);
     setNewPassword('');
+    setConfirmNewPassword('');
     setPasswordError('');
     setPasswordDialogOpen(true);
   };
 
   const openCreateUserDialog = () => {
-    setNewUser({ firstName: '', lastName: '', email: '', password: '', isAdmin: false });
+    setNewUser({ firstName: '', lastName: '', email: '', password: '', confirmPassword: '', isAdmin: false });
     setCreateUserError('');
     setCreateUserDialogOpen(true);
   };
 
   const createUser = async () => {
-    if (!newUser.firstName || !newUser.lastName || !newUser.email || !newUser.password) {
-      setCreateUserError('All fields are required');
+    if (!newUser.firstName || !newUser.lastName || !newUser.email) {
+      setCreateUserError('First name, last name, and email are required');
       return;
     }
 
-    if (newUser.password.length < 6) {
-      setCreateUserError('Password must be at least 6 characters');
+    // Password handling: must both be empty OR both be filled and match
+    const passwordEmpty = !newUser.password;
+    const confirmPasswordEmpty = !newUser.confirmPassword;
+    
+    if (passwordEmpty !== confirmPasswordEmpty) {
+      setCreateUserError('Please fill in both password fields or leave both empty');
       return;
+    }
+    
+    if (!passwordEmpty && !confirmPasswordEmpty) {
+      if (newUser.password.length < 6) {
+        setCreateUserError('Password must be at least 6 characters');
+        return;
+      }
+      if (newUser.password !== newUser.confirmPassword) {
+        setCreateUserError('Passwords do not match');
+        return;
+      }
     }
 
     try {
@@ -127,7 +153,7 @@ export default function AdminDashboard() {
         first_name: newUser.firstName,
         last_name: newUser.lastName,
         email: newUser.email,
-        password: newUser.password,
+        password: newUser.password || null, // Send null if empty
         is_admin: newUser.isAdmin
       });
       setCreateUserDialogOpen(false);
@@ -144,6 +170,39 @@ export default function AdminDashboard() {
       fetchAdminData(); // Refresh user list
     } catch (err) {
       console.error('Failed to toggle admin status:', err);
+    }
+  };
+
+  const openDeleteDialog = (userId: number) => {
+    setUserToDelete(userId);
+    setDeleteError('');
+    setDeleteDialogOpen(true);
+  };
+
+  const deleteUser = async () => {
+    if (!userToDelete) {
+      setDeleteError('No user selected');
+      return;
+    }
+
+    try {
+      await api.delete(`/api/admin/users/${userToDelete}/delete`);
+      setDeleteDialogOpen(false);
+      setUserToDelete(null);
+      fetchAdminData(); // Refresh user list
+    } catch (err: any) {
+      console.error('Failed to delete user:', err);
+      setDeleteError(err.response?.data || 'Failed to delete user. Please try again.');
+    }
+  };
+
+  const resetPassword = async (userId: number) => {
+    try {
+      await api.post(`/api/admin/users/${userId}/reset-password`);
+      alert('Password reset email sent successfully.');
+    } catch (err: any) {
+      console.error('Failed to reset password:', err);
+      alert(err.response?.data || 'Failed to send password reset email.');
     }
   };
 
@@ -193,18 +252,21 @@ export default function AdminDashboard() {
                         Admin
                       </label>
                     </div>
-                    <Badge variant={user.approved ? "default" : "secondary"}>
-                      {user.approved ? "Approved" : "Pending"}
-                    </Badge>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={() => openPasswordDialog(user.id)}>
                         Change Password
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => resetPassword(user.id)}>
+                        Reset Password
                       </Button>
                       {!user.approved && (
                         <Button onClick={() => approveUser(user.id)} size="sm">
                           Approve
                         </Button>
                       )}
+                      <Button variant="destructive" size="sm" onClick={() => openDeleteDialog(user.id)}>
+                        Delete
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -319,13 +381,21 @@ export default function AdminDashboard() {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
-              <Input
-                type="password"
-                placeholder="New password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoFocus
-              />
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  type="password"
+                  placeholder="New password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoFocus
+                />
+                <Input
+                  type="password"
+                  placeholder="Confirm password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                />
+              </div>
               {passwordError && (
                 <p className="text-sm text-red-500">{passwordError}</p>
               )}
@@ -370,12 +440,23 @@ export default function AdminDashboard() {
                 value={newUser.email}
                 onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
               />
-              <Input
-                type="password"
-                placeholder="Password (minimum 6 characters)"
-                value={newUser.password}
-                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-              />
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  type="password"
+                  placeholder="Password (leave empty for reset link)"
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                />
+                <Input
+                  type="password"
+                  placeholder="Confirm password"
+                  value={newUser.confirmPassword}
+                  onChange={(e) => setNewUser({ ...newUser, confirmPassword: e.target.value })}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Leave password fields empty to send a password reset link via email
+              </p>
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="create-admin"
@@ -399,6 +480,29 @@ export default function AdminDashboard() {
               </Button>
               <Button onClick={createUser}>
                 Create User
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete User Confirmation Dialog */}
+        <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete User</DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete this user? This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            {deleteError && (
+              <p className="text-sm text-red-500">{deleteError}</p>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={deleteUser}>
+                Delete User
               </Button>
             </DialogFooter>
           </DialogContent>

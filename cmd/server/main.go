@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
@@ -23,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/robfig/cron/v3"
 	"github.com/rwcarlsen/goexif/exif"
 	_ "github.com/lib/pq"
@@ -33,6 +35,21 @@ import (
 
 var cliMode = false
 var jwtSecret = []byte("supersecret123changeinprod")
+var p = bluemonday.UGCPolicy()
+
+// sanitizeHTML sanitizes user input to prevent XSS and SQL injection
+func sanitizeHTML(input string) string {
+	// Use bluemonday to sanitize HTML
+	sanitized := p.Sanitize(input)
+	
+	// Also trim whitespace and limit length
+	sanitized = strings.TrimSpace(sanitized)
+	if len(sanitized) > 10000 {
+		sanitized = sanitized[:10000]
+	}
+	
+	return sanitized
+}
 
 // OAuth2 configuration
 var oauthConfig *oauth2.Config
@@ -155,6 +172,53 @@ func isAdminMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware checks if the requesting user is authenticated (any role)
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get the JWT token from the Authorization header
+		tokenString := r.Header.Get("Authorization")
+		if tokenString == "" {
+			http.Error(w, "Unauthorized: No token provided", http.StatusUnauthorized)
+			return
+		}
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+		// Parse the token
+		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(*Claims)
+		if !ok {
+			http.Error(w, "Unauthorized: Invalid token claims", http.StatusUnauthorized)
+			return
+		}
+
+		// Get user ID from database
+		db, err := sql.Open("postgres", getDBURL())
+		if err != nil {
+			http.Error(w, "DB error", http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		var userID int
+		err = db.QueryRow("SELECT id FROM users WHERE email = $1", claims.Email).Scan(&userID)
+		if err != nil {
+			http.Error(w, "Unauthorized: User not found", http.StatusUnauthorized)
+			return
+		}
+
+		// Add user ID to context
+		ctx := context.WithValue(r.Context(), "user_id", userID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func main() {
 
 	godotenv.Load()
@@ -181,14 +245,22 @@ func main() {
 	r.HandleFunc("/api/auth/google/callback", googleAuthCallbackHandler).Methods("GET")
 	r.HandleFunc("/api/auth/request-access", requestAccessHandler).Methods("POST")
 	r.HandleFunc("/api/auth/change-password", changePasswordHandler).Methods("POST")
+	r.HandleFunc("/api/auth/reset-password", passwordResetHandler).Methods("POST")
+	r.HandleFunc("/reset-password", passwordResetHandler).Methods("GET")
 	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
+	r.HandleFunc("/api/photos/{id}/comments", photoCommentsHandler).Methods("GET")
 	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
 	r.HandleFunc("/api/collections/{id}", collectionHandler).Methods("GET")
 	r.HandleFunc("/api/folders", foldersHandler).Methods("GET")
 	r.HandleFunc("/api/scan", scanHandler).Methods("POST")
 	r.HandleFunc("/api/health", healthHandler).Methods("GET")
+
+	// Authenticated routes (protected by auth middleware)
+	authRouter := r.PathPrefix("/api").Subrouter()
+	authRouter.Use(authMiddleware)
+	authRouter.HandleFunc("/photos/{id}/comments", addPhotoCommentHandler).Methods("POST")
 
 	// Admin routes (protected by admin middleware)
 	adminRouter := r.PathPrefix("/api/admin").Subrouter()
@@ -198,6 +270,8 @@ func main() {
 	adminRouter.HandleFunc("/users/{id}/approve", adminUserApproveHandler).Methods("POST")
 	adminRouter.HandleFunc("/users/{id}/change-password", adminUserChangePasswordHandler).Methods("POST")
 	adminRouter.HandleFunc("/users/{id}/toggle-admin", adminUserToggleAdminHandler).Methods("POST")
+	adminRouter.HandleFunc("/users/{id}/delete", adminUserDeleteHandler).Methods("DELETE")
+	adminRouter.HandleFunc("/users/{id}/reset-password", adminUserResetPasswordHandler).Methods("POST")
 	adminRouter.HandleFunc("/account-requests", adminAccountRequestsHandler).Methods("GET")
 	adminRouter.HandleFunc("/account-requests/{id}/review", adminAccountRequestReviewHandler).Methods("POST")
 	adminRouter.HandleFunc("/proposed-edits", adminProposedEditsHandler).Methods("GET")
@@ -523,7 +597,8 @@ func spaHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "/login" ||
 		r.URL.Path == "/collections" || strings.HasPrefix(r.URL.Path, "/collections/") ||
 		strings.HasPrefix(r.URL.Path, "/photo") ||
-		r.URL.Path == "/account" || r.URL.Path == "/admin" {
+		r.URL.Path == "/account" || r.URL.Path == "/admin" ||
+		r.URL.Path == "/reset-password" {
 		http.ServeFile(w, r, filepath.Join(frontendDist, "index.html"))
 		return
 	}
@@ -1125,10 +1200,185 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get comments for this photo
+	rows, err := db.Query(`
+		SELECT c.id, c.content, c.created_at, u.name, u.id
+		FROM comments c
+		JOIN users u ON c.user_id = u.id
+		WHERE c.photo_id = $1
+		ORDER BY c.created_at ASC
+	`, id)
+	if err != nil {
+		http.Error(w, "Failed to fetch comments", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	comments := []map[string]interface{}{}
+	for rows.Next() {
+		var comment struct {
+			ID        int       `json:"id"`
+			Content   string    `json:"content"`
+			CreatedAt time.Time `json:"created_at"`
+			UserName  string    `json:"user_name"`
+			UserID    int       `json:"user_id"`
+		}
+		err := rows.Scan(&comment.ID, &comment.Content, &comment.CreatedAt, &comment.UserName, &comment.UserID)
+		if err != nil {
+			continue
+		}
+		comments = append(comments, map[string]interface{}{
+			"id":         comment.ID,
+			"content":    comment.Content,
+			"created_at": comment.CreatedAt,
+			"user_name":  comment.UserName,
+			"user_id":    comment.UserID,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"photo":       photo,
 		"breadcrumbs": breadcrumbs,
+		"comments":    comments,
+	})
+}
+
+// photoCommentsHandler returns all comments for a photo
+func photoCommentsHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Check if photo exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", id).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Photo not found", http.StatusNotFound)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT c.id, c.content, c.created_at, u.name, u.id
+		FROM comments c
+		JOIN users u ON c.user_id = u.id
+		WHERE c.photo_id = $1
+		ORDER BY c.created_at ASC
+	`, id)
+	if err != nil {
+		http.Error(w, "Failed to fetch comments", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	comments := []map[string]interface{}{}
+	for rows.Next() {
+		var comment struct {
+			ID        int       `json:"id"`
+			Content   string    `json:"content"`
+			CreatedAt time.Time `json:"created_at"`
+			UserName  string    `json:"user_name"`
+			UserID    int       `json:"user_id"`
+		}
+		err := rows.Scan(&comment.ID, &comment.Content, &comment.CreatedAt, &comment.UserName, &comment.UserID)
+		if err != nil {
+			continue
+		}
+		comments = append(comments, map[string]interface{}{
+			"id":         comment.ID,
+			"content":    comment.Content,
+			"created_at": comment.CreatedAt,
+			"user_name":  comment.UserName,
+			"user_id":    comment.UserID,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(comments)
+}
+
+// addPhotoCommentHandler adds a new comment to a photo
+func addPhotoCommentHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	photoID, _ := strconv.Atoi(idStr)
+
+	// Get user from context (requires authentication)
+	userID := r.Context().Value("user_id")
+	if userID == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize content
+	sanitizedContent := sanitizeHTML(req.Content)
+	if sanitizedContent == "" {
+		http.Error(w, "Comment content is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if photo exists
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", photoID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Photo not found", http.StatusNotFound)
+		return
+	}
+
+	// Insert comment
+	var commentID int
+	err = db.QueryRow(`
+		INSERT INTO comments (photo_id, user_id, content)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, photoID, userID, sanitizedContent).Scan(&commentID)
+	if err != nil {
+		http.Error(w, "Failed to add comment", http.StatusInternalServerError)
+		return
+	}
+
+	// Get the comment with user info
+	var comment struct {
+		ID        int       `json:"id"`
+		Content   string    `json:"content"`
+		CreatedAt time.Time `json:"created_at"`
+		UserName  string    `json:"user_name"`
+		UserID    int       `json:"user_id"`
+	}
+	err = db.QueryRow(`
+		SELECT c.id, c.content, c.created_at, u.name, u.id
+		FROM comments c
+		JOIN users u ON c.user_id = u.id
+		WHERE c.id = $1
+	`, commentID).Scan(&comment.ID, &comment.Content, &comment.CreatedAt, &comment.UserName, &comment.UserID)
+	if err != nil {
+		http.Error(w, "Failed to fetch comment", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":         comment.ID,
+		"content":    comment.Content,
+		"created_at": comment.CreatedAt,
+		"user_name":  comment.UserName,
+		"user_id":    comment.UserID,
 	})
 }
 
@@ -1404,11 +1654,11 @@ func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Email     string `json:"email"`
-		Password  string `json:"password"`
-		IsAdmin   bool   `json:"is_admin"`
+		FirstName string  `json:"first_name"`
+		LastName  string  `json:"last_name"`
+		Email     string  `json:"email"`
+		Password  *string `json:"password"` // Pointer to distinguish empty string from null
+		IsAdmin   bool    `json:"is_admin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
@@ -1416,13 +1666,13 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate required fields
-	if req.FirstName == "" || req.LastName == "" || req.Email == "" || req.Password == "" {
-		http.Error(w, "First name, last name, email, and password are required", http.StatusBadRequest)
+	if req.FirstName == "" || req.LastName == "" || req.Email == "" {
+		http.Error(w, "First name, last name, and email are required", http.StatusBadRequest)
 		return
 	}
 
-	// Validate password length
-	if len(req.Password) < 6 {
+	// If password is provided, validate it
+	if req.Password != nil && len(*req.Password) < 6 {
 		http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
 		return
 	}
@@ -1434,13 +1684,6 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	// Hash the password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
-		return
-	}
-
 	// Determine role
 	role := "user"
 	if req.IsAdmin {
@@ -1449,10 +1692,22 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Create the user
 	fullName := req.FirstName + " " + req.LastName
+	
+	// If password is provided, hash it and create user with password
+	// If password is empty/null, create user without password (will need reset link)
+	var hashedPassword interface{} = nil
+	if req.Password != nil && *req.Password != "" {
+		hashedPassword, err = bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	_, err = db.Exec(`
 		INSERT INTO users (email, password_hash, name, role, approved)
 		VALUES ($1, $2, $3, $4, true)
-	`, req.Email, string(hashedPassword), fullName, role)
+	`, req.Email, hashedPassword, fullName, role)
 	if err != nil {
 		// Check if email already exists
 		if strings.Contains(err.Error(), "duplicate key value") {
@@ -1461,6 +1716,62 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// If no password was provided, generate reset token and send email
+	if req.Password == nil || *req.Password == "" {
+		// Get the newly created user ID
+		var userID int
+		err = db.QueryRow("SELECT id FROM users WHERE email = $1", req.Email).Scan(&userID)
+		if err != nil {
+			http.Error(w, "Failed to get user ID", http.StatusInternalServerError)
+			return
+		}
+
+		// Generate reset token
+		resetToken, err := generateResetToken()
+		if err != nil {
+			http.Error(w, "Failed to generate reset token", http.StatusInternalServerError)
+			return
+		}
+
+		// Store reset token (expires in 24 hours)
+		_, err = db.Exec(`
+			INSERT INTO password_resets (user_id, token, expires_at)
+			VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '24 hours')
+		`, userID, resetToken)
+		if err != nil {
+			http.Error(w, "Failed to store reset token", http.StatusInternalServerError)
+			return
+		}
+
+		// Get frontend URL from env or default
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:8080"
+		}
+
+		// Send welcome email with reset link
+		subject := "Welcome to MoopicView - Set Your Password"
+		resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, resetToken)
+		body := fmt.Sprintf(`
+			<html>
+			<body>
+				<h1>Welcome to MoopicView</h1>
+				<p>Hello %s,</p>
+				<p>An account has been created for you on MoopicView.</p>
+				<p>Please click the link below to set your password:</p>
+				<p><a href="%s">Set Password</a></p>
+				<p>This link will expire in 24 hours.</p>
+				<p>Best regards,<br>MoopicView Admin</p>
+			</body>
+			</html>
+		`, fullName, resetLink)
+
+		if err := sendEmail(req.Email, subject, body); err != nil {
+			log.Printf("Failed to send welcome email to %s: %v", req.Email, err)
+			// We don't return an error here because the user was created successfully
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1671,6 +1982,131 @@ func adminUserToggleAdminHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "role updated", "new_role": newRole})
 }
 
+func adminUserDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	// Check if user exists
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", id).Scan(&exists)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Don't allow deleting the only admin
+	var adminCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&adminCount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the user's role to check if they're an admin
+	var userRole string
+	err = db.QueryRow("SELECT role FROM users WHERE id = $1", id).Scan(&userRole)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if userRole == "admin" && adminCount <= 1 {
+		http.Error(w, "Cannot delete the last admin user", http.StatusBadRequest)
+		return
+	}
+
+	// Delete the user
+	_, err = db.Exec("DELETE FROM users WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "user deleted"})
+}
+
+func adminUserResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	db, err := sql.Open("postgres", getDBURL())
+	if err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	// Get user details
+	var email, name string
+	err = db.QueryRow("SELECT email, name FROM users WHERE id = $1", id).Scan(&email, &name)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Generate reset token
+	resetToken, err := generateResetToken()
+	if err != nil {
+		http.Error(w, "Failed to generate reset token", http.StatusInternalServerError)
+		return
+	}
+
+	// Store reset token (expires in 24 hours)
+	_, err = db.Exec(`
+		INSERT INTO password_resets (user_id, token, expires_at)
+		VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '24 hours')
+	`, id, resetToken)
+	if err != nil {
+		http.Error(w, "Failed to store reset token", http.StatusInternalServerError)
+		return
+	}
+
+	// Get frontend URL from env or default
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:8080"
+	}
+
+	// Send email with reset link
+	subject := "MoopicView Password Reset"
+	resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, resetToken)
+	body := fmt.Sprintf(`
+		<html>
+		<body>
+			<h1>MoopicView Password Reset</h1>
+			<p>Hello %s,</p>
+			<p>An admin has requested a password reset for your account.</p>
+			<p>Please click the link below to set your new password:</p>
+			<p><a href="%s">Reset Password</a></p>
+			<p>This link will expire in 24 hours.</p>
+			<p>Best regards,<br>MoopicView Admin</p>
+		</body>
+		</html>
+	`, name, resetLink)
+
+	if err := sendEmail(email, subject, body); err != nil {
+		log.Printf("Failed to send password reset email to %s: %v", email, err)
+		// We don't return an error here because the token was stored successfully
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reset email sent"})
+}
+
 func adminPhotoDateHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	idStr := vars["id"]
@@ -1783,6 +2219,7 @@ func adminAccountRequestsHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
 		SELECT id, email, name, message, status, created_at 
 		FROM account_requests 
+		WHERE status = 'pending'
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -1844,48 +2281,65 @@ func adminAccountRequestReviewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If approved, create the user account
+	// If approved, create the user account and send reset link
 	if req.Status == "approved" {
-		// Generate a random password
-		randomPassword, err := generateRandomPassword()
-		if err != nil {
-			http.Error(w, "Failed to generate password", http.StatusInternalServerError)
-			return
-		}
-
-		// Hash the password
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(randomPassword), bcrypt.DefaultCost)
-		if err != nil {
-			http.Error(w, "Failed to hash password", http.StatusInternalServerError)
-			return
-		}
-
-		// Create the user
+		// Create the user without password (they will set it via reset link)
 		_, err = db.Exec(`
-			INSERT INTO users (email, name, password_hash, role, approved)
-			VALUES ($1, $2, $3, 'user', true)
-		`, email, name, string(hashedPassword))
+			INSERT INTO users (email, name, role, approved)
+			VALUES ($1, $2, 'user', true)
+		`, email, name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Send email notification
-		subject := "MoopicView Account Approved"
+		// Get the newly created user ID
+		var userID int
+		err = db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
+		if err != nil {
+			http.Error(w, "Failed to get user ID", http.StatusInternalServerError)
+			return
+		}
+
+		// Generate reset token
+		resetToken, err := generateResetToken()
+		if err != nil {
+			http.Error(w, "Failed to generate reset token", http.StatusInternalServerError)
+			return
+		}
+
+		// Store reset token (expires in 24 hours)
+		_, err = db.Exec(`
+			INSERT INTO password_resets (user_id, token, expires_at)
+			VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '24 hours')
+		`, userID, resetToken)
+		if err != nil {
+			http.Error(w, "Failed to store reset token", http.StatusInternalServerError)
+			return
+		}
+
+		// Get frontend URL from env or default
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:8080"
+		}
+
+		// Send email with reset link
+		subject := "MoopicView Account Approved - Set Your Password"
+		resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, resetToken)
 		body := fmt.Sprintf(`
 			<html>
 			<body>
 				<h1>MoopicView Account Approved</h1>
 				<p>Hello %s,</p>
 				<p>Your account request for MoopicView has been approved.</p>
-				<p>You can now log in using your email address and the following password:</p>
-				<p><strong>Password:</strong> %s</p>
-				<p>Please change your password after logging in for the first time.</p>
-				<p><a href="http://localhost:8080/login">Login to MoopicView</a></p>
+				<p>Please click the link below to set your password:</p>
+				<p><a href="%s">Set Password</a></p>
+				<p>This link will expire in 24 hours.</p>
 				<p>Best regards,<br>MoopicView Admin</p>
 			</body>
 			</html>
-		`, name, randomPassword)
+		`, name, resetLink)
 
 		if err := sendEmail(email, subject, body); err != nil {
 			log.Printf("Failed to send approval email to %s: %v", email, err)
@@ -1908,9 +2362,9 @@ func adminAccountRequestReviewHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "request reviewed"})
 }
 
-func generateRandomPassword() (string, error) {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
-	b := make([]byte, 12)
+func generateResetToken() (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 32)
 	for i := range b {
 		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
 		if err != nil {
@@ -1919,4 +2373,78 @@ func generateRandomPassword() (string, error) {
 		b[i] = charset[idx.Int64()]
 	}
 	return string(b), nil
+}
+
+func passwordResetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		// Serve the reset password page
+		spaHandler(w, r)
+		return
+	}
+
+	if r.Method == "POST" {
+		// Handle password reset
+		var req struct {
+			Token    string `json:"token"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid input", http.StatusBadRequest)
+			return
+		}
+
+		if req.Token == "" || req.Password == "" {
+			http.Error(w, "Token and password are required", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.Password) < 6 {
+			http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+			return
+		}
+
+		db, err := sql.Open("postgres", getDBURL())
+		if err != nil {
+			http.Error(w, "DB error", http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		// Verify token and check expiration
+		var userID int
+		err = db.QueryRow(`
+			SELECT user_id FROM password_resets 
+			WHERE token = $1 AND expires_at > CURRENT_TIMESTAMP
+		`, req.Token).Scan(&userID)
+		if err != nil {
+			http.Error(w, "Invalid or expired reset token", http.StatusUnauthorized)
+			return
+		}
+
+		// Hash the new password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+			return
+		}
+
+		// Update user password
+		_, err = db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", string(hashedPassword), userID)
+		if err != nil {
+			http.Error(w, "Failed to update password", http.StatusInternalServerError)
+			return
+		}
+
+		// Delete the used reset token
+		_, err = db.Exec("DELETE FROM password_resets WHERE token = $1", req.Token)
+		if err != nil {
+			log.Printf("Failed to delete reset token: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "password updated"})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }

@@ -2,8 +2,12 @@ import { Link } from 'react-router-dom';
 import { ThemeToggle } from './theme-toggle';
 import { User } from 'lucide-react';
 import { Button } from './ui/button';
+import { useAuth } from '@/hooks/useAuth';
 
 export function Navbar() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
   return (
     <nav className="flex items-center justify-between border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-8 py-4">
       <div className="flex items-center gap-6">
@@ -17,9 +21,11 @@ export function Navbar() {
           <Link to="/account" className="text-muted-foreground hover:text-foreground transition-colors">
             Account
           </Link>
-          <Link to="/admin" className="text-muted-foreground hover:text-foreground transition-colors">
-            Admin
-          </Link>
+          {isAdmin && (
+            <Link to="/admin" className="text-muted-foreground hover:text-foreground transition-colors">
+              Admin
+            </Link>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-4">
