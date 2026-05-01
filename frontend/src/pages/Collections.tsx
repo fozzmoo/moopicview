@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { formatDate } from '@/lib/dateUtils';
+import ProgressiveImage from '@/components/ProgressiveImage';
 
 export default function Collections() {
   const navigate = useNavigate();
@@ -194,27 +195,28 @@ export default function Collections() {
                   <h2 className="text-xl font-semibold text-foreground">Photos</h2>
                   <Badge variant="secondary">{filteredPhotos.length}</Badge>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {filteredPhotos.map((photo) => (
-                    <Link key={photo.id} to={`/photo/${photo.id}`}>
-                      <Card className="group hover:shadow-xl transition-all overflow-hidden">
-                        <div className="relative aspect-square overflow-hidden bg-muted">
-                          <img
-                            src={photo.url}
-                            alt={photo.filename}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          />
-                        </div>
-                        <CardContent className="p-3">
-                          <p className="text-sm font-medium truncate">{photo.filename}</p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {formatDate(photo.photo_date, photo.date_precision)}
-                          </p>
-                        </CardContent>
-                      </Card>
-                    </Link>
-                  ))}
-                </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {filteredPhotos.map((photo) => (
+                      <Link key={photo.id} to={`/photo/${photo.id}`}>
+                        <Card className="group hover:shadow-xl transition-all overflow-hidden">
+                          <div className="relative aspect-square overflow-hidden bg-muted">
+                            <ProgressiveImage
+                              src={photo.url}
+                              thumbnail={`/thumbnails/${photo.id}`}
+                              alt={photo.filename}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            />
+                          </div>
+                          <CardContent className="p-3">
+                            <p className="text-sm font-medium truncate">{photo.filename}</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {formatDate(photo.photo_date, photo.date_precision)}
+                            </p>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    ))}
+                  </div>
               </div>
             )}
           </>

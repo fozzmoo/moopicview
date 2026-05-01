@@ -8,6 +8,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '@/components/ui/input';
 import { formatDate } from '@/lib/dateUtils';
 import { useAuth } from '@/hooks/useAuth';
+import ProgressiveImage from '@/components/ProgressiveImage';
 import {
   Dialog,
   DialogContent,
@@ -269,8 +270,9 @@ export default function PhotoView() {
                     </Link>
                   )}
                   
-                  <img
+                  <ProgressiveImage
                     src={photo.content_url}
+                    thumbnail={`/thumbnails/${id}`}
                     alt={photo.filename}
                     className="max-h-[70vh] w-auto rounded-lg"
                   />

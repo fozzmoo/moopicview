@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -250,6 +251,7 @@ func main() {
 	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
+	r.HandleFunc("/thumbnails/{id}", photoThumbnailHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/comments", photoCommentsHandler).Methods("GET")
 	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
 	r.HandleFunc("/api/collections/{id}", collectionHandler).Methods("GET")
@@ -581,7 +583,7 @@ func sendEmail(to, subject, body string) error {
 }
 
 func spaHandler(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api") {
+	if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/thumbnails") {
 		http.NotFound(w, r)
 		return
 	}
@@ -1076,6 +1078,80 @@ func photoContentHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 	}
 
+	io.Copy(w, file)
+}
+
+func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+	
+	log.Printf("Thumbnail request for photo ID: %d", id)
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	var filepathStr string
+	err := db.QueryRow("SELECT filepath FROM photos WHERE id = $1", id).Scan(&filepathStr)
+	if err != nil {
+		log.Printf("Photo not found for ID %d: %v", id, err)
+		http.Error(w, "Photo not found", http.StatusNotFound)
+		return
+	}
+	
+	log.Printf("Found photo path: %s", filepathStr)
+
+	// Determine cache directory
+	cacheDir := os.Getenv("THUMBNAIL_CACHE_DIR")
+	if cacheDir == "" {
+		cacheDir = "/opt/mooview/cache"
+	}
+
+	// Create cache directory if it doesn't exist
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		http.Error(w, "Cache directory error", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate cache filename (replace path separators with underscores)
+	cacheFilename := strings.ReplaceAll(strings.TrimPrefix(filepathStr, "/"), "/", "_")
+	cachePath := filepath.Join(cacheDir, cacheFilename+".jpg")
+
+	// Check if thumbnail already exists
+	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+		// Thumbnail doesn't exist, generate it
+		img, err := imaging.Open(filepathStr)
+		if err != nil {
+			http.Error(w, "Failed to open image", http.StatusInternalServerError)
+			return
+		}
+
+		// Resize to 300px width, maintain aspect ratio (height = 0 for auto)
+		thumbnail := imaging.Resize(img, 300, 0, imaging.Lanczos)
+
+		// Save thumbnail to cache
+		err = imaging.Save(thumbnail, cachePath)
+		if err != nil {
+			http.Error(w, "Failed to save thumbnail", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Serve the thumbnail
+	file, err := os.Open(cachePath)
+	if err != nil {
+		http.Error(w, "File error", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	
+	// Handle HEAD requests (return only headers, no body)
+	if r.Method == "HEAD" {
+		return
+	}
+	
 	io.Copy(w, file)
 }
 

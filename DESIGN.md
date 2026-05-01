@@ -174,10 +174,11 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Smart date formatting based on precision (June 1989 instead of 1989-06-01)
   - Admin users can edit photo date directly from viewer
   - **Comments**: List of comments from oldest to newest with user name and timestamp, plus form to post new comments (authenticated users only)
+  - **Progressive Image Loading**: Thumbnails load instantly, full images fade in when ready
 - **Collections Interface**:
   - Card-based collection display with counts
   - Folder grid with hover effects
-  - Photo grid with image thumbnails
+  - Photo grid with image thumbnails (progressive loading)
   - Search functionality for filtering photos
   - Responsive design for desktop, tablet, and mobile
 - **Accessibility**: High contrast ratios, keyboard navigation, proper ARIA labels
@@ -185,7 +186,22 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 ### Background Services
 - On startup: Scan directories specified in `PHOTO_ROOTS` recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
-- Thumbnail generation (optional, stored alongside or in cache dir)
+- **Thumbnail Generation**: On-demand generation with caching
+  - **Backend Endpoint**: `GET /thumbnails/:id` (served outside `/api` prefix to bypass auth middleware for static asset delivery)
+  - **Generation Logic**:
+    - Reads photo path from database using ID
+    - Opens source image using `imaging` library
+    - Resizes to 300px width maintaining aspect ratio (Lanczos filter)
+    - Saves to cache directory with `.webp` extension
+  - **Caching**:
+    - On-demand generation: Generates thumbnail on first request
+    - Disk caching: Stores thumbnails permanently at `THUMBNAIL_CACHE_DIR` (default `/opt/mooview/cache`)
+    - Instant subsequent access: Serves cached files directly without regeneration
+    - Production path: `/unas/images/mooview_cache` on tic
+  - **Progressive Loading**:
+    - Thumbnail displays immediately
+    - Full image fades in when loaded
+    - Implemented in `ProgressiveImage` React component
 
 ### Hierarchical Collection Navigation
 
@@ -350,7 +366,8 @@ src/
 │   ├── ui/         # shadcn/ui components (Button, Card, Badge, Dropdown Menu, etc.)
 │   ├── navbar.tsx  # Main navigation bar with theme toggle
 │   ├── theme-toggle.tsx  # Dark/light mode switcher
-│   └── theme-provider.tsx  # Theme context provider
+│   ├── theme-provider.tsx  # Theme context provider
+│   └── ProgressiveImage.tsx  # Thumbnail-first image loading component
 ├── pages/          # Page components
 │   ├── Login.tsx
 │   ├── Collections.tsx  # Collections and photo browsing
@@ -365,6 +382,23 @@ src/
 │   └── utils.ts    # Helper functions (cn for class merging)
 └── App.tsx         # Main app with routing
 ```
+
+**Progressive Image Loading Component:**
+- **Component**: `ProgressiveImage.tsx`
+- **Purpose**: Provides thumbnail-first image loading with smooth fade-in transition
+- **Features**:
+  - Accepts `src` (full image URL) and `thumbnail` (thumbnail URL) props
+  - Displays thumbnail immediately while preloading full image
+  - Shows loading placeholder (gray pulse animation) while thumbnail loads
+  - Fades in full image when loaded, maintaining aspect ratio
+  - Error handling for failed thumbnail or full image loads
+- **Usage**:
+  - Collections page: Displays photo thumbnails in grid view
+  - PhotoView page: Shows high-resolution images with instant thumbnail preview
+- **Backend Integration**:
+  - Thumbnail URLs point to `/thumbnails/:id` endpoint
+  - Full image URLs point to `/api/photos/:id/content` endpoint
+  - Thumbnails are generated on-demand and cached permanently
 
 **UI Component System:**
 - **shadcn/ui**: Copy-paste components built on Radix UI primitives
@@ -494,7 +528,56 @@ cd frontend && npm run test
 
 **Background scan** runs automatically on container start. Ensure volume permissions allow reading `/unas`.
 
-## 13. Future Enhancements (Not in MVP)
+## 13. API Endpoints
+
+### 13.1 Public Routes
+- `GET /api/health` - Server status
+- `POST /api/auth/login` - User login
+- `POST /api/auth/google` - Google OAuth initiation
+- `GET /api/auth/google/callback` - Google OAuth callback
+- `POST /api/auth/request-access` - Request account access
+- `POST /api/auth/reset-password` - Initiate password reset
+- `GET /reset-password` - Password reset page (serves frontend SPA)
+- `GET /api/photos` - List photos with filtering
+- `GET /api/photos/{id}` - Get photo details with breadcrumbs
+- `GET /api/photos/{id}/content` - Serve photo file
+- `GET /thumbnails/{id}` - Serve thumbnail (300px width, cached)
+- `GET /api/photos/{id}/comments` - Get photo comments
+- `GET /api/collections` - List root collections
+- `GET /api/collections/{id}` - Get collection contents (folders/photos)
+- `GET /api/folders` - List all folders
+
+### 13.2 Authenticated Routes (require JWT)
+- `POST /api/photos/{id}/comments` - Add comment to photo
+
+### 13.3 Admin Routes (require admin role)
+- `GET /api/admin/users` - List all users
+- `POST /api/admin/users` - Create new user
+- `POST /api/admin/users/{id}/approve` - Approve user account
+- `POST /api/admin/users/{id}/change-password` - Change user password
+- `POST /api/admin/users/{id}/toggle-admin` - Toggle admin role
+- `DELETE /api/admin/users/{id}/delete` - Delete user
+- `POST /api/admin/users/{id}/reset-password` - Reset user password (sends email)
+- `GET /api/admin/account-requests` - List account requests
+- `POST /api/admin/account-requests/{id}/review` - Review account request
+- `GET /api/admin/proposed-edits` - List proposed edits
+- `POST /api/admin/proposed-edits/{id}/review` - Review proposed edit
+- `POST /api/admin/photos/{id}/date` - Update photo date
+- `POST /api/admin/photos/{id}/description` - Update photo description
+- `POST /api/scan` - Trigger photo scan (admin only)
+
+### 13.4 Frontend SPA Routes
+The backend serves the React SPA for all non-API routes:
+- `GET /` - Home page (serves `index.html`)
+- `GET /login` - Login page
+- `GET /collections` - Collections browse page
+- `GET /collections/{id}` - Specific collection page
+- `GET /photo/{id}` - Photo detail page
+- `GET /account` - User account page
+- `GET /admin` - Admin dashboard
+- `GET /reset-password` - Password reset page
+
+## 14. Future Enhancements (Not in MVP)
 
 - Face recognition
 - AI image description/tagging
