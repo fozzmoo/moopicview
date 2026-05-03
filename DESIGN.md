@@ -88,7 +88,7 @@ photos (
 )
 
 tags (id, name) -- global shared tags
-photo_tags (photo_id, tag_id) -- many-to-many
+photo_tags (photo_id, tag_id, pos_x, pos_y) -- many-to-many with position
 
 comments (id, photo_id, user_id, content, created_at)
 
@@ -135,7 +135,18 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - **Search**: By filename, description, date (supports partial dates), tags (full-text where possible)
 - **View & Download**: Lightbox viewer with EXIF if available, download button
 - **Comment**: Threaded comments per photo
-- **Tag**: Add/remove shared global tags
+- **Tag**: Add/remove shared global tags to photos with position and visibility controls
+  - Tags are stored in a global `tags` table and associated with photos via `photo_tags` junction table
+  - Users can add existing tags or create new tags via the tagging dialog
+  - Tags are displayed as removable chips on the photo detail page
+  - Each tag has a position (X, Y) stored as percentages (0-100) for overlay positioning
+  - **Tag Positioning**: Position calculated by clicking on thumbnail preview in tagging dialog
+  - **Accurate Coordinate Calculation**: Account for letterboxing in images displayed with `object-contain`
+  - **Tag Visibility Toggle**: Tag icon button (top-right of image) to show/hide all tags on image (hidden by default)
+  - **Hover-to-Reveal**: Tag labels appear when hovering over tag markers on the image
+  - **Tag Search/Browse**: Dedicated page listing all tags with photo counts
+  - **Tag Photos Page**: View all photos associated with a specific tag
+  - Tags support search and filtering (future enhancement)
 - **Propose Edit**: Suggest changes to description, photo date, or date precision; notifies admin
 - **Photo Date Management**:
   - Digital photos: Auto-extract from EXIF or directory name (e.g., `20170625-FortBuenaVentura`)
@@ -302,7 +313,11 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - `GET /api/photos/:id/content` (protected image serve)
 - `GET /api/photos/:id/comments` (get comments for a photo)
 - `POST /api/photos/:id/comments` (add comment to a photo - requires auth)
-- `POST /api/photos/:id/tags`
+- `GET /api/photos/:id/tags` (get tags for a photo)
+- `POST /api/photos/:id/tags` (add tag to a photo - requires auth)
+- `DELETE /api/photos/:id/tags/:tagId` (remove tag from photo - requires auth)
+- `GET /api/tags` (get all available tags for autocomplete)
+- `GET /api/tags/:id/photos` (get all photos for a specific tag)
 - `POST /api/photos/:id/propose-edit`
 
 **Admin:**
@@ -328,6 +343,11 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - ✅ `GET /api/photos/:id/content` - Serve image file
 - ✅ `GET /api/photos/:id/comments` - Get comments for a photo
 - ✅ `POST /api/photos/:id/comments` - Add comment to a photo (requires auth)
+- ✅ `GET /api/photos/:id/tags` - Get tags for a photo
+- ✅ `GET /api/tags` - Get all available tags
+- ✅ `GET /api/tags/:id/photos` - Get photos for a specific tag
+- ✅ `POST /api/photos/:id/tags` - Add tag to a photo (requires auth)
+- ✅ `DELETE /api/photos/:id/tags/:tagId` - Remove tag from photo (requires auth)
 - ✅ `POST /api/scan` - Trigger photo scan
 - ✅ `GET /api/admin/users` - List all users (requires admin role)
 - ✅ `POST /api/admin/users` - Create new user account (requires admin role)
@@ -354,7 +374,13 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - ✅ Toggle admin status for existing users
 - ✅ Delete user with confirmation dialog
 - ✅ TDD harness setup (Go tests + Vitest + Testing Library)
-- ✅ User account page
+- ✅ Tag management (add/remove tags with position)
+- ✅ Tag search/browse page (list all tags, search by name)
+- ✅ Tag photos page (view all photos for a specific tag)
+- ✅ Hover-to-reveal tag labels on photos
+  - ✅ Tag visibility toggle (show/hide all tags on photo)
+  - ✅ Improved tag positioning (accounts for letterboxing in images)
+  - ✅ User account page
 - ✅ Previous/next navigation in photo viewer
 - ✅ Photo comments (view and post comments with timestamp)
 
@@ -417,9 +443,15 @@ src/
 - State persists across page transitions (Collections → PhotoView)
 - Allows breadcrumb navigation back to any folder level
 
-- Responsive design optimized for desktop, tablet, and mobile
-- Infinite scroll or pagination for large collections
-- Dark mode support with high contrast for accessibility
+**PhotoView Component Features:**
+- **Image Display**: Uses `ProgressiveImage` component for thumbnail-first loading
+- **Tag Markers**: Position markers overlay on the image at stored X/Y coordinates
+- **Tag Visibility Toggle**: Button (top-right of image) to show/hide all tags
+- **Tag Positioning**: Click thumbnail preview in tagging dialog to set position
+- **Edge Navigation**: Click left/right 15% of image to navigate to previous/next photo
+- **Tags Section**: List of all tags on the photo in the sidebar
+- **Hover Synchronization**: Hovering tag in sidebar highlights marker on image
+- **Keyboard Navigation**: Arrow keys for previous/next photo, Escape to exit fullscreen
 
 ## 9. Testing & TDD Harness
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
@@ -94,6 +96,33 @@ func setupTestDB(t *testing.T) *sql.DB {
 	`)
 	if err != nil {
 		t.Fatalf("Failed to create comments table: %v", err)
+	}
+
+	// Drop and recreate tags table
+	_, err = db.Exec(`
+		DROP TABLE IF EXISTS tags CASCADE;
+		CREATE TABLE tags (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) UNIQUE NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create tags table: %v", err)
+	}
+
+	// Drop and recreate photo_tags table
+	_, err = db.Exec(`
+		DROP TABLE IF EXISTS photo_tags CASCADE;
+		CREATE TABLE photo_tags (
+			photo_id INTEGER REFERENCES photos(id) ON DELETE CASCADE,
+			tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+			pos_x FLOAT DEFAULT 50,
+			pos_y FLOAT DEFAULT 50,
+			PRIMARY KEY (photo_id, tag_id)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create photo_tags table: %v", err)
 	}
 
 	// Insert test user with proper bcrypt hash
@@ -927,5 +956,295 @@ func TestAdminUserResetPasswordHandler(t *testing.T) {
 
 	if w2.Code != http.StatusNotFound {
 		t.Errorf("Expected status 404 for non-existent user, got %d. Body: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// Test photoTagsHandler
+func TestPhotoTagsHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Insert test photo
+	var photoID int
+	err := db.QueryRow("INSERT INTO photos (filepath, filename, collection) VALUES ($1, $2, $3) RETURNING id", 
+		"/test/photo.jpg", "photo.jpg", "test").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+
+	// Insert test tags
+	var tag1ID, tag2ID int
+	err = db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Person A").Scan(&tag1ID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+	err = db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Person B").Scan(&tag2ID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Associate tags with photo
+	_, err = db.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tag1ID)
+	if err != nil {
+		t.Fatalf("Failed to associate tag with photo: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tag2ID)
+	if err != nil {
+		t.Fatalf("Failed to associate tag with photo: %v", err)
+	}
+
+	// Test getting tags for photo
+	req := httptest.NewRequest("GET", "/api/photos/"+fmt.Sprint(photoID)+"/tags", nil)
+	vars := map[string]string{"id": fmt.Sprint(photoID)}
+	req = mux.SetURLVars(req, vars)
+	w := httptest.NewRecorder()
+
+	photoTagsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tags []map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &tags)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(tags) != 2 {
+		t.Errorf("Expected 2 tags, got %d", len(tags))
+	}
+
+	// Test with non-existent photo
+	req2 := httptest.NewRequest("GET", "/api/photos/99999/tags", nil)
+	vars2 := map[string]string{"id": "99999"}
+	req2 = mux.SetURLVars(req2, vars2)
+	w2 := httptest.NewRecorder()
+
+	photoTagsHandler(w2, req2)
+
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent photo, got %d. Body: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// Test tagsHandler
+func TestTagsHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Insert test tags
+	_, err := db.Exec("INSERT INTO tags (name) VALUES ($1), ($2)", "Tag 1", "Tag 2")
+	if err != nil {
+		t.Fatalf("Failed to insert test tags: %v", err)
+	}
+
+	// Test getting all tags
+	req := httptest.NewRequest("GET", "/api/tags", nil)
+	w := httptest.NewRecorder()
+
+	tagsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tags []map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &tags)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(tags) < 2 {
+		t.Errorf("Expected at least 2 tags, got %d", len(tags))
+	}
+}
+
+// Test addPhotoTagHandler
+func TestAddPhotoTagHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Insert test photo
+	var photoID int
+	err := db.QueryRow("INSERT INTO photos (filepath, filename, collection) VALUES ($1, $2, $3) RETURNING id", 
+		"/test/photo.jpg", "photo.jpg", "test").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+
+	// Get test user ID
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE email = $1", "testadmin@example.com").Scan(&userID)
+	if err != nil {
+		t.Fatalf("Failed to get test user: %v", err)
+	}
+
+	// Create JWT token for the user
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	// Test adding a new tag
+	reqBody := `{"tagName": "New Person"}`
+	req := httptest.NewRequest("POST", "/api/photos/"+fmt.Sprint(photoID)+"/tags", bytes.NewBufferString(reqBody))
+	vars := map[string]string{"id": fmt.Sprint(photoID)}
+	req = mux.SetURLVars(req, vars)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+	w := httptest.NewRecorder()
+
+	// Set user ID in context
+	ctx := context.WithValue(req.Context(), "user_id", userID)
+	req = req.WithContext(ctx)
+
+	addPhotoTagHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("Expected status 201, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify tag was added to photo
+	var tagCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM photo_tags WHERE photo_id = $1", photoID).Scan(&tagCount)
+	if err != nil {
+		t.Fatalf("Failed to count photo tags: %v", err)
+	}
+	if tagCount != 1 {
+		t.Errorf("Expected 1 tag on photo, got %d", tagCount)
+	}
+
+	// Test adding duplicate tag
+	req2 := httptest.NewRequest("POST", "/api/photos/"+fmt.Sprint(photoID)+"/tags", bytes.NewBufferString(reqBody))
+	vars2 := map[string]string{"id": fmt.Sprint(photoID)}
+	req2 = mux.SetURLVars(req2, vars2)
+	req2.Header.Set("Authorization", "Bearer "+tokenString)
+	w2 := httptest.NewRecorder()
+	ctx2 := context.WithValue(req2.Context(), "user_id", userID)
+	req2 = req2.WithContext(ctx2)
+
+	addPhotoTagHandler(w2, req2)
+
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for duplicate tag, got %d. Body: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// Test removePhotoTagHandler
+func TestRemovePhotoTagHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Insert test photo
+	var photoID int
+	err := db.QueryRow("INSERT INTO photos (filepath, filename, collection) VALUES ($1, $2, $3) RETURNING id", 
+		"/test/photo.jpg", "photo.jpg", "test").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+
+	// Insert test tag
+	var tagID int
+	err = db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Test Person").Scan(&tagID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Associate tag with photo
+	_, err = db.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tagID)
+	if err != nil {
+		t.Fatalf("Failed to associate tag with photo: %v", err)
+	}
+
+	// Get test user ID
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE email = $1", "testadmin@example.com").Scan(&userID)
+	if err != nil {
+		t.Fatalf("Failed to get test user: %v", err)
+	}
+
+	// Create JWT token for the user
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	// Test removing tag from photo
+	req := httptest.NewRequest("DELETE", "/api/photos/"+fmt.Sprint(photoID)+"/tags/"+fmt.Sprint(tagID), nil)
+	vars := map[string]string{"id": fmt.Sprint(photoID), "tagId": fmt.Sprint(tagID)}
+	req = mux.SetURLVars(req, vars)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+	w := httptest.NewRecorder()
+
+	// Set user ID in context
+	ctx := context.WithValue(req.Context(), "user_id", userID)
+	req = req.WithContext(ctx)
+
+	removePhotoTagHandler(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Expected status 204, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify tag was removed from photo
+	var tagCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM photo_tags WHERE photo_id = $1 AND tag_id = $2", photoID, tagID).Scan(&tagCount)
+	if err != nil {
+		t.Fatalf("Failed to count photo tags: %v", err)
+	}
+	if tagCount != 0 {
+		t.Errorf("Expected 0 tags on photo after removal, got %d", tagCount)
 	}
 }

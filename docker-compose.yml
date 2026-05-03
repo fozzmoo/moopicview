@@ -12,8 +12,9 @@ services:
     networks:
       - default
     volumes:
-      - /opt/mooview/digital:/opt/mooview/digital:ro
-      - /opt/mooview/scanned:/opt/mooview/scanned:ro
+      - /drv/origVideo/mooview/digital:/opt/mooview/digital:ro
+      - /drv/origVideo/mooview/scanned:/opt/mooview/scanned:ro
+      - /drv/origVideo/mooview/cache:/mooview_cache:rw
     depends_on:
       - db
     restart: unless-stopped

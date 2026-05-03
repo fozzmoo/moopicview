@@ -18,6 +18,9 @@ export function Navbar() {
         <Link to="/collections?reset=true" className="text-muted-foreground hover:text-foreground transition-colors">
           Collections
         </Link>
+        <Link to="/tags" className="text-muted-foreground hover:text-foreground transition-colors">
+          Tags
+        </Link>
           <Link to="/account" className="text-muted-foreground hover:text-foreground transition-colors">
             Account
           </Link>

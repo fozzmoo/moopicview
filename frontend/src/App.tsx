@@ -4,6 +4,8 @@ import Login from './pages/Login';
 import ResetPassword from './pages/ResetPassword';
 import Collections from './pages/Collections';
 import PhotoView from './pages/PhotoView';
+import TagsView from './pages/TagsView';
+import TagPhotosView from './pages/TagPhotosView';
 import AdminDashboard from './pages/AdminDashboard';
 import Account from './pages/Account';
 import { AuthProvider, useAuth } from './hooks/useAuth';
@@ -41,6 +43,16 @@ function App() {
                 <Route path="/photo/:id" element={
                   <ProtectedRoute>
                     <PhotoView />
+                  </ProtectedRoute>
+                } />
+                <Route path="/tags" element={
+                  <ProtectedRoute>
+                    <TagsView />
+                  </ProtectedRoute>
+                } />
+                <Route path="/tags/:tagId" element={
+                  <ProtectedRoute>
+                    <TagPhotosView />
                   </ProtectedRoute>
                 } />
                 <Route path="/admin" element={

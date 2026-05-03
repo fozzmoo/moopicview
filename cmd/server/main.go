@@ -253,6 +253,9 @@ func main() {
 	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
 	r.HandleFunc("/thumbnails/{id}", photoThumbnailHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/comments", photoCommentsHandler).Methods("GET")
+	r.HandleFunc("/api/photos/{id}/tags", photoTagsHandler).Methods("GET")
+	r.HandleFunc("/api/tags", tagsHandler).Methods("GET")
+	r.HandleFunc("/api/tags/{id}/photos", photosByTagHandler).Methods("GET")
 	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
 	r.HandleFunc("/api/collections/{id}", collectionHandler).Methods("GET")
 	r.HandleFunc("/api/folders", foldersHandler).Methods("GET")
@@ -263,6 +266,8 @@ func main() {
 	authRouter := r.PathPrefix("/api").Subrouter()
 	authRouter.Use(authMiddleware)
 	authRouter.HandleFunc("/photos/{id}/comments", addPhotoCommentHandler).Methods("POST")
+	authRouter.HandleFunc("/photos/{id}/tags", addPhotoTagHandler).Methods("POST")
+	authRouter.HandleFunc("/photos/{id}/tags/{tagId}", removePhotoTagHandler).Methods("DELETE")
 
 	// Admin routes (protected by admin middleware)
 	adminRouter := r.PathPrefix("/api/admin").Subrouter()
@@ -595,10 +600,11 @@ func spaHandler(w http.ResponseWriter, r *http.Request) {
 		frontendDist = "../../frontend/dist"
 	}
 
-	// Handle all routes that should serve index.html
+ 	// Handle all routes that should serve index.html
 	if r.URL.Path == "/" || r.URL.Path == "/login" ||
 		r.URL.Path == "/collections" || strings.HasPrefix(r.URL.Path, "/collections/") ||
 		strings.HasPrefix(r.URL.Path, "/photo") ||
+		r.URL.Path == "/tags" || strings.HasPrefix(r.URL.Path, "/tags/") ||
 		r.URL.Path == "/account" || r.URL.Path == "/admin" ||
 		r.URL.Path == "/reset-password" {
 		http.ServeFile(w, r, filepath.Join(frontendDist, "index.html"))
@@ -1312,11 +1318,46 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Get tags for this photo
+	tagRows, err := db.Query(`
+		SELECT t.id, t.name, pt.pos_x, pt.pos_y
+		FROM tags t
+		JOIN photo_tags pt ON t.id = pt.tag_id
+		WHERE pt.photo_id = $1
+		ORDER BY t.name ASC
+	`, id)
+	if err != nil {
+		http.Error(w, "Failed to fetch tags", http.StatusInternalServerError)
+		return
+	}
+	defer tagRows.Close()
+
+	tags := []map[string]interface{}{}
+	for tagRows.Next() {
+		var tag struct {
+			ID    int     `json:"id"`
+			Name  string  `json:"name"`
+			PosX  float64 `json:"posX"`
+			PosY  float64 `json:"posY"`
+		}
+		err := tagRows.Scan(&tag.ID, &tag.Name, &tag.PosX, &tag.PosY)
+		if err != nil {
+			continue
+		}
+		tags = append(tags, map[string]interface{}{
+			"id":    tag.ID,
+			"name":  tag.Name,
+			"posX":  tag.PosX,
+			"posY":  tag.PosY,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"photo":       photo,
 		"breadcrumbs": breadcrumbs,
 		"comments":    comments,
+		"tags":        tags,
 	})
 }
 
@@ -1456,6 +1497,311 @@ func addPhotoCommentHandler(w http.ResponseWriter, r *http.Request) {
 		"user_name":  comment.UserName,
 		"user_id":    comment.UserID,
 	})
+}
+
+// photoTagsHandler returns all tags for a photo
+func photoTagsHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Check if photo exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", id).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Photo not found", http.StatusNotFound)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT t.id, t.name, pt.pos_x, pt.pos_y
+		FROM tags t
+		JOIN photo_tags pt ON t.id = pt.tag_id
+		WHERE pt.photo_id = $1
+		ORDER BY t.name ASC
+	`, id)
+	if err != nil {
+		http.Error(w, "Failed to fetch tags", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tags := []map[string]interface{}{}
+	for rows.Next() {
+		var tag struct {
+			ID    int     `json:"id"`
+			Name  string  `json:"name"`
+			PosX  float64 `json:"posX"`
+			PosY  float64 `json:"posY"`
+		}
+		err := rows.Scan(&tag.ID, &tag.Name, &tag.PosX, &tag.PosY)
+		if err != nil {
+			continue
+		}
+		tags = append(tags, map[string]interface{}{
+			"id":    tag.ID,
+			"name":  tag.Name,
+			"posX":  tag.PosX,
+			"posY":  tag.PosY,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tags)
+}
+
+// tagsHandler returns all available tags (for autocomplete)
+func tagsHandler(w http.ResponseWriter, r *http.Request) {
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	rows, err := db.Query("SELECT id, name FROM tags ORDER BY name ASC")
+	if err != nil {
+		http.Error(w, "Failed to fetch tags", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tags := []map[string]interface{}{}
+	for rows.Next() {
+		var tag struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		}
+		err := rows.Scan(&tag.ID, &tag.Name)
+		if err != nil {
+			continue
+		}
+		tags = append(tags, map[string]interface{}{
+			"id":   tag.ID,
+			"name": tag.Name,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tags)
+}
+
+// photosByTagHandler returns all photos for a specific tag
+func photosByTagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	tagIdStr := vars["id"]
+	tagID, _ := strconv.Atoi(tagIdStr)
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Check if tag exists
+	var tagName string
+	err := db.QueryRow("SELECT name FROM tags WHERE id = $1", tagID).Scan(&tagName)
+	if err != nil {
+		http.Error(w, "Tag not found", http.StatusNotFound)
+		return
+	}
+
+	// Get photos with this tag
+	rows, err := db.Query(`
+		SELECT p.id, p.filepath, p.filename, p.collection, p.folder_id, 
+		       p.photo_date, p.date_precision, p.date_source, p.description,
+		       pt.pos_x, pt.pos_y
+		FROM photos p
+		JOIN photo_tags pt ON p.id = pt.photo_id
+		WHERE pt.tag_id = $1
+		ORDER BY p.photo_date DESC, p.id DESC
+	`, tagID)
+	if err != nil {
+		http.Error(w, "Failed to fetch photos", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	photos := []map[string]interface{}{}
+	for rows.Next() {
+		var photo struct {
+			ID            int       `json:"id"`
+			Filepath      string    `json:"filepath"`
+			Filename      string    `json:"filename"`
+			Collection    string    `json:"collection"`
+			FolderID      *int      `json:"folder_id"`
+			PhotoDate     *string   `json:"photo_date"`
+			DatePrecision string    `json:"date_precision"`
+			DateSource    string    `json:"date_source"`
+			Description   string    `json:"description"`
+			PosX          float64   `json:"posX"`
+			PosY          float64   `json:"posY"`
+		}
+		err := rows.Scan(&photo.ID, &photo.Filepath, &photo.Filename, &photo.Collection, 
+			&photo.FolderID, &photo.PhotoDate, &photo.DatePrecision, &photo.DateSource,
+			&photo.Description, &photo.PosX, &photo.PosY)
+		if err != nil {
+			continue
+		}
+		
+		photos = append(photos, map[string]interface{}{
+			"id":            photo.ID,
+			"filepath":      photo.Filepath,
+			"filename":      photo.Filename,
+			"collection":    photo.Collection,
+			"folder_id":     photo.FolderID,
+			"photo_date":    photo.PhotoDate,
+			"date_precision": photo.DatePrecision,
+			"date_source":   photo.DateSource,
+			"description":   photo.Description,
+			"content_url":   fmt.Sprintf("/api/photos/%d/content", photo.ID),
+			"tag_position": map[string]interface{}{
+				"x": photo.PosX,
+				"y": photo.PosY,
+			},
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tag_id":   tagID,
+		"tag_name": tagName,
+		"photos":   photos,
+		"count":    len(photos),
+	})
+}
+
+// addPhotoTagHandler adds a tag to a photo
+func addPhotoTagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	photoID, _ := strconv.Atoi(idStr)
+
+	// Get user from context (requires authentication)
+	userID := r.Context().Value("user_id")
+	if userID == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		TagName string  `json:"tagName"`
+		PosX    *float64 `json:"posX"`
+		PosY    *float64 `json:"posY"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize tag name
+	tagName := strings.TrimSpace(req.TagName)
+	if tagName == "" {
+		http.Error(w, "Tag name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Default position to center (50, 50) if not provided
+	posX := 50.0
+	posY := 50.0
+	if req.PosX != nil {
+		posX = *req.PosX
+	}
+	if req.PosY != nil {
+		posY = *req.PosY
+	}
+
+	// Validate position is within bounds (0-100)
+	if posX < 0 || posX > 100 || posY < 0 || posY > 100 {
+		http.Error(w, "Position must be between 0 and 100", http.StatusBadRequest)
+		return
+	}
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Check if photo exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", photoID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Photo not found", http.StatusNotFound)
+		return
+	}
+
+	// Get or create tag
+	var tagID int
+	err = db.QueryRow("INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", tagName).Scan(&tagID)
+	if err != nil {
+		http.Error(w, "Failed to create tag", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if tag is already associated with photo
+	var alreadyExists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM photo_tags WHERE photo_id = $1 AND tag_id = $2)", photoID, tagID).Scan(&alreadyExists)
+	if err != nil {
+		http.Error(w, "Failed to check tag association", http.StatusInternalServerError)
+		return
+	}
+	if alreadyExists {
+		http.Error(w, "Tag already exists for this photo", http.StatusBadRequest)
+		return
+	}
+
+	// Add tag to photo with position
+	_, err = db.Exec("INSERT INTO photo_tags (photo_id, tag_id, pos_x, pos_y) VALUES ($1, $2, $3, $4)", photoID, tagID, posX, posY)
+	if err != nil {
+		http.Error(w, "Failed to add tag to photo", http.StatusInternalServerError)
+		return
+	}
+
+	// Log the activity
+	log.Printf("User %d added tag '%s' to photo %d at position (%.1f, %.1f)", userID, tagName, photoID, posX, posY)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":    tagID,
+		"name":  tagName,
+		"posX":  posX,
+		"posY":  posY,
+	})
+}
+
+// removePhotoTagHandler removes a tag from a photo
+func removePhotoTagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	photoID, _ := strconv.Atoi(idStr)
+	tagIdStr := vars["tagId"]
+	tagID, _ := strconv.Atoi(tagIdStr)
+
+	// Get user from context (requires authentication)
+	userID := r.Context().Value("user_id")
+	if userID == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	db, _ := sql.Open("postgres", getDBURL())
+	defer db.Close()
+
+	// Check if association exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photo_tags WHERE photo_id = $1 AND tag_id = $2)", photoID, tagID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Tag not found for this photo", http.StatusNotFound)
+		return
+	}
+
+	// Remove tag from photo
+	_, err = db.Exec("DELETE FROM photo_tags WHERE photo_id = $1 AND tag_id = $2", photoID, tagID)
+	if err != nil {
+		http.Error(w, "Failed to remove tag from photo", http.StatusInternalServerError)
+		return
+	}
+
+	// Log the activity
+	log.Printf("User %d removed tag %d from photo %d", userID, tagID, photoID)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func scanHandler(w http.ResponseWriter, r *http.Request) {

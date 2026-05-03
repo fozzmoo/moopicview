@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
-import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronRight, Edit2 } from 'lucide-react';
+import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronRight, Edit2, Tag } from 'lucide-react';
 import { Navbar } from '../components/navbar';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -25,6 +25,7 @@ export default function PhotoView() {
   const [photo, setPhoto] = useState<any>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<any[]>([]);
   const [comments, setComments] = useState<any[]>([]);
+  const [tags, setTags] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [editDate, setEditDate] = useState('');
@@ -34,6 +35,7 @@ export default function PhotoView() {
   const [newComment, setNewComment] = useState('');
   const [commentError, setCommentError] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const [showTags, setShowTags] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -42,6 +44,7 @@ export default function PhotoView() {
         setPhoto(photoRes.data.photo);
         setBreadcrumbs(photoRes.data.breadcrumbs || []);
         setComments(photoRes.data.comments || []);
+        setTags(photoRes.data.tags || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -250,32 +253,74 @@ export default function PhotoView() {
         <div className="flex items-start gap-4 lg:gap-8">
           <div className="flex-1 flex flex-col gap-6">
             <div className="flex-1">
-              <Card className="overflow-hidden">
-                <div className="relative bg-black/5 flex items-center justify-center min-h-[400px]">
-                  {/* Previous/Next Navigation */}
-                  {photo.prev_photo_id && (
-                    <Link
-                      to={`/photo/${photo.prev_photo_id}`}
-                      className="absolute left-2 top-1/2 -translate-y-1/2 z-10 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
-                    >
-                      <ChevronLeft className="h-6 w-6 text-white" />
-                    </Link>
-                  )}
-                  {photo.next_photo_id && (
-                    <Link
-                      to={`/photo/${photo.next_photo_id}`}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 z-10 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
-                    >
-                      <ChevronRight className="h-6 w-6 text-white" />
-                    </Link>
-                  )}
+                <Card className="overflow-hidden flex-1">
+                  <div className="relative bg-black/5 w-full h-full flex items-center justify-center">
+                    {/* Edge Click Navigation - Left 15% */}
+                    {photo.prev_photo_id && (
+                      <Link
+                        to={`/photo/${photo.prev_photo_id}`}
+                        className="absolute left-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
+                        title="Previous photo"
+                      >
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                          <ChevronLeft className="h-8 w-8 text-white" />
+                        </div>
+                      </Link>
+                    )}
+
+                    {/* Edge Click Navigation - Right 15% */}
+                    {photo.next_photo_id && (
+                      <Link
+                        to={`/photo/${photo.next_photo_id}`}
+                        className="absolute right-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
+                        title="Next photo"
+                      >
+                        <div className="absolute right-1/2 top-1/2 translate-x-1/2 -translate-y-1/2">
+                          <ChevronRight className="h-8 w-8 text-white" />
+                        </div>
+                      </Link>
+                    )}
+                  
+                  {/* Tag Toggle Button */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`absolute top-2 right-2 z-20 h-8 w-8 p-0 ${showTags ? 'bg-primary text-white' : 'bg-black/50 hover:bg-black/70 text-white'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowTags(!showTags);
+                    }}
+                    title={showTags ? 'Hide Tags' : 'Show Tags'}
+                  >
+                    <Tag className="h-4 w-4" />
+                  </Button>
                   
                   <ProgressiveImage
                     src={photo.content_url}
                     thumbnail={`/thumbnails/${id}`}
                     alt={photo.filename}
-                    className="max-h-[70vh] w-auto rounded-lg"
+                    className="h-full w-full object-contain rounded-lg"
                   />
+                  
+                  {/* Tag Markers Overlay */}
+                  {showTags && tags.map((tag) => (
+                    <div
+                      key={tag.id}
+                      className="absolute group"
+                      style={{
+                        left: `${tag.posX}%`,
+                        top: `${tag.posY}%`,
+                        transform: 'translate(-50%, -50%)'
+                      }}
+                    >
+                      {/* Large invisible hover area */}
+                      <div className="w-16 h-16 -ml-8 -mt-8 cursor-pointer" />
+                      {/* Tag label tooltip */}
+                      <div className="absolute left-1/2 top-full mt-1 px-2 py-1 bg-black/70 text-white text-xs rounded whitespace-nowrap pointer-events-none -translate-x-1/2 opacity-100">
+                        {tag.name}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </Card>
             </div>
@@ -349,10 +394,33 @@ export default function PhotoView() {
                       Download
                     </Button>
                   </div>
-                </CardContent>
-              </Card>
+                 </CardContent>
+               </Card>
 
-              {/* Comments Section */}
+               {/* Tags Section */}
+               <Card>
+                 <CardContent className="p-6">
+                   <h3 className="font-semibold mb-4 text-sm text-foreground">Tags ({tags.length})</h3>
+                   
+                   {/* Tags List */}
+                   <div className="flex flex-wrap gap-2 mb-4">
+                     {tags.length === 0 ? (
+                       <p className="text-sm text-muted-foreground">No tags yet</p>
+                     ) : (
+                       tags.map((tag) => (
+                         <span 
+                           key={tag.id} 
+                           className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm bg-primary/10 text-primary"
+                         >
+                           {tag.name}
+                         </span>
+                       ))
+                     )}
+                   </div>
+                 </CardContent>
+               </Card>
+
+               {/* Comments Section */}
               <Card>
                 <CardContent className="p-6">
                   <h3 className="font-semibold mb-4 text-sm text-foreground">Comments ({comments.length})</h3>
