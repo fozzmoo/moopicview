@@ -198,17 +198,18 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - On startup: Scan directories specified in `PHOTO_ROOTS` recursively, upsert into `photos` table
 - File system watcher (fsnotify) for new/deleted files
 - **Thumbnail Generation**: On-demand generation with caching
-  - **Backend Endpoint**: `GET /thumbnails/:id` (served outside `/api` prefix to bypass auth middleware for static asset delivery)
-  - **Generation Logic**:
-    - Reads photo path from database using ID
-    - Opens source image using `imaging` library
-    - Resizes to 300px width maintaining aspect ratio (Lanczos filter)
-    - Saves to cache directory with `.webp` extension
-  - **Caching**:
-    - On-demand generation: Generates thumbnail on first request
-    - Disk caching: Stores thumbnails permanently at `THUMBNAIL_CACHE_DIR` (default `/opt/mooview/cache`)
-    - Instant subsequent access: Serves cached files directly without regeneration
-    - Production path: `/unas/images/mooview_cache` on tic
+   - **Backend Endpoint**: `GET /thumbnails/:id` (served outside `/api` prefix to bypass auth middleware for static asset delivery)
+   - **Generation Logic**:
+     - Reads photo path from database using ID
+     - Opens source image using `imaging` library
+     - Reads EXIF orientation tag (1, 3, 6, 8) and applies appropriate rotation
+     - Resizes to 300px width maintaining aspect ratio (Lanczos filter)
+     - Saves to cache directory with `.webp` extension
+   - **Caching**:
+     - On-demand generation: Generates thumbnail on first request
+     - Disk caching: Stores thumbnails permanently at `THUMBNAIL_CACHE_DIR` (default `/mooview_cache`)
+     - Instant subsequent access: Serves cached files directly without regeneration
+     - Production path: `/mooview_cache` (mounted from `/unas/images/mooview_cache` on tic)
   - **Progressive Loading**:
     - Thumbnail displays immediately
     - Full image fades in when loaded
@@ -237,7 +238,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 The `PHOTO_ROOTS` environment variable uses a `type:path` format to specify photo sources:
 
 ```
-PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,scanned:/unas/images/scanned_photos/scan-date/2018/20180726-Slides
+PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_photos
 ```
 
 **Format:** `collection_type:absolute_path` (comma-separated for multiple roots)
@@ -380,7 +381,10 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos/2017/20170625-FortBuenaVentura,s
 - ✅ Hover-to-reveal tag labels on photos
   - ✅ Tag visibility toggle (show/hide all tags on photo)
   - ✅ Improved tag positioning (accounts for letterboxing in images)
-  - ✅ User account page
+  - ✅ "Add Tag" button in Tags section (auto-focuses input)
+  - ✅ EXIF orientation handling in thumbnails
+  - ✅ Tag count display in collection view
+- ✅ User account page
 - ✅ Previous/next navigation in photo viewer
 - ✅ Photo comments (view and post comments with timestamp)
 
@@ -573,7 +577,7 @@ cd frontend && npm run test
 - `GET /api/photos` - List photos with filtering
 - `GET /api/photos/{id}` - Get photo details with breadcrumbs
 - `GET /api/photos/{id}/content` - Serve photo file
-- `GET /thumbnails/{id}` - Serve thumbnail (300px width, cached)
+- `GET /thumbnails/{id}` - Serve thumbnail (300px width, cached, supports HEAD method)
 - `GET /api/photos/{id}/comments` - Get photo comments
 - `GET /api/collections` - List root collections
 - `GET /api/collections/{id}` - Get collection contents (folders/photos)
@@ -619,4 +623,4 @@ The backend serves the React SPA for all non-API routes:
 
 ---
 
-*This document will evolve as implementation proceeds. Next step: implement database migrations and core Go backend scaffolding.*
+*This document will evolve as implementation proceeds. Current status: Core features implemented, TDD harness active, deployment containerized.*
