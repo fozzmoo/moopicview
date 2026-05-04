@@ -7,9 +7,10 @@ interface ProgressiveImageProps {
   className?: string;
   style?: React.CSSProperties;
   onImageLoad?: (naturalWidth: number, naturalHeight: number) => void;
+  fit?: 'contain' | 'cover';
 }
 
-export default function ProgressiveImage({ src, thumbnail, alt = '', className = '', style, onImageLoad }: ProgressiveImageProps) {
+export default function ProgressiveImage({ src, thumbnail, alt = '', className = '', style, onImageLoad, fit = 'contain' }: ProgressiveImageProps) {
   const [isFullLoaded, setIsFullLoaded] = useState(false);
   const [isThumbnailLoaded, setIsThumbnailLoaded] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -34,13 +35,15 @@ export default function ProgressiveImage({ src, thumbnail, alt = '', className =
     };
   }, [src, onImageLoad]);
 
+  const objectFit = fit === 'cover' ? 'object-cover' : 'object-contain';
+
   return (
     <div className={`relative ${className}`} style={style}>
       {/* Thumbnail (always visible until full image loads) */}
       <img
         src={thumbnail}
         alt={alt}
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+        className={`absolute inset-0 w-full h-full ${objectFit} transition-opacity duration-300 ${
           isFullLoaded ? 'opacity-0' : 'opacity-100'
         }`}
         onLoad={() => setIsThumbnailLoaded(true)}
@@ -55,7 +58,7 @@ export default function ProgressiveImage({ src, thumbnail, alt = '', className =
         ref={imgRef}
         src={src}
         alt={alt}
-        className={`w-full h-full object-contain transition-opacity duration-300 ${
+        className={`w-full h-full ${objectFit} transition-opacity duration-300 ${
           isFullLoaded ? 'opacity-100' : 'opacity-0'
         }`}
         onLoad={() => {

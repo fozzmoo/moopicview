@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
-import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronRight, Edit2, Tag } from 'lucide-react';
+import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronRight, Edit2, Tag, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw, Plus, X } from 'lucide-react';
 import { Navbar } from '../components/navbar';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -36,6 +36,12 @@ export default function PhotoView() {
   const [commentError, setCommentError] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
   const [showTags, setShowTags] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [hoveredTagId, setHoveredTagId] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -71,6 +77,221 @@ export default function PhotoView() {
       alert('Failed to download image');
     }
   };
+
+  // Tagging dialog state
+  const [isTagDialogOpen, setIsTagDialogOpen] = useState(false);
+  const [tagPosition, setTagPosition] = useState({ x: 50, y: 50 });
+  const [newTagName, setNewTagName] = useState('');
+  const [existingTags, setExistingTags] = useState<any[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<any[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSubmittingTag, setIsSubmittingTag] = useState(false);
+  const [tagError, setTagError] = useState('');
+  const tagNameInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus tag name input when dialog opens
+  useEffect(() => {
+    if (isTagDialogOpen && tagNameInputRef.current) {
+      setTimeout(() => {
+        tagNameInputRef.current?.focus();
+      }, 100);
+    }
+  }, [isTagDialogOpen]);
+
+  // Fetch existing tags for autocomplete
+  useEffect(() => {
+    const fetchTags = async () => {
+      try {
+        const tagsRes = await api.get('/api/tags');
+        setExistingTags(tagsRes.data);
+      } catch (err) {
+        console.error('Failed to fetch tags:', err);
+      }
+    };
+    fetchTags();
+  }, []);
+
+  // Filter tags based on input for suggestions
+  useEffect(() => {
+    if (newTagName.trim().length > 0) {
+      const filtered = existingTags.filter(tag => 
+        tag.name.toLowerCase().includes(newTagName.toLowerCase())
+      );
+      setTagSuggestions(filtered.slice(0, 5)); // Show max 5 suggestions
+      setShowSuggestions(true);
+    } else {
+      setTagSuggestions([]);
+      setShowSuggestions(false);
+    }
+  }, [newTagName, existingTags]);
+
+  // Handle tag submission
+  const handleAddTag = async () => {
+    if (!newTagName.trim()) {
+      setTagError('Tag name is required');
+      return;
+    }
+
+    setIsSubmittingTag(true);
+    setTagError('');
+
+    try {
+      const response = await api.post(`/api/photos/${id}/tags`, {
+        tagName: newTagName.trim(),
+        posX: tagPosition.x,
+        posY: tagPosition.y
+      });
+      
+      // Add the new tag to the list
+      setTags([...tags, response.data]);
+      setIsTagDialogOpen(false);
+      setNewTagName('');
+      
+      // Refresh photo data to get updated tags
+      const photoRes = await api.get(`/api/photos/${id}`);
+      setTags(photoRes.data.tags || []);
+    } catch (err: any) {
+      console.error('Failed to add tag:', err);
+      setTagError(err.response?.data || 'Failed to add tag');
+    } finally {
+      setIsSubmittingTag(false);
+    }
+  };
+
+  // Handle tag deletion
+  const handleDeleteTag = async (tagId: number) => {
+    try {
+      await api.delete(`/api/photos/${id}/tags/${tagId}`);
+      // Remove tag from local state
+      setTags(tags.filter(tag => tag.id !== tagId));
+    } catch (err) {
+      console.error('Failed to delete tag:', err);
+      alert('Failed to delete tag');
+    }
+  };
+
+  // Fullscreen functions
+  const enterFullscreen = () => {
+    setIsFullscreen(true);
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    
+    const elem = document.documentElement;
+    if (elem.requestFullscreen) {
+      elem.requestFullscreen();
+    } else if ((elem as any).webkitRequestFullscreen) {
+      (elem as any).webkitRequestFullscreen();
+    } else if ((elem as any).msRequestFullscreen) {
+      (elem as any).msRequestFullscreen();
+    }
+  };
+
+  const exitFullscreen = () => {
+    setIsFullscreen(false);
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    
+    // Exit browser fullscreen
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if ((document as any).webkitExitFullscreen) {
+      (document as any).webkitExitFullscreen();
+    } else if ((document as any).msExitFullscreen) {
+      (document as any).msExitFullscreen();
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (isFullscreen) {
+      exitFullscreen();
+    } else {
+      enterFullscreen();
+    }
+  };
+
+  // Zoom functions
+  const handleZoomIn = () => {
+    setZoomLevel(prev => Math.min(prev + 0.25, 3));
+  };
+
+  const handleZoomOut = () => {
+    setZoomLevel(prev => Math.max(prev - 0.25, 0.5));
+  };
+
+  const handleResetZoom = () => {
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+  };
+
+  // Pan functions
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (zoomLevel > 1) {
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (isDragging && zoomLevel > 1) {
+      setPanOffset({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      });
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleMouseLeave = () => {
+    setIsDragging(false);
+  };
+
+  // Handle image click to add tag
+  const handleImageClick = (e: React.MouseEvent) => {
+    if (!user || isFullscreen) return; // Don't add tags in fullscreen mode or if not logged in
+    
+    // Get the container that holds the image (the relative positioned div)
+    const container = e.currentTarget.parentElement;
+    if (!container) return;
+    
+    const containerRect = container.getBoundingClientRect();
+    
+    // Calculate position relative to the container
+    const x = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    const y = ((e.clientY - containerRect.top) / containerRect.height) * 100;
+    
+    setTagPosition({ x, y });
+    setNewTagName('');
+    setTagError('');
+    setIsTagDialogOpen(true);
+  };
+
+  // Sync fullscreen state with browser's fullscreen API
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!document.fullscreenElement || 
+        !!(document as any).webkitFullscreenElement || 
+        !!(document as any).msFullscreenElement;
+      
+      setIsFullscreen(isCurrentlyFullscreen);
+      if (!isCurrentlyFullscreen) {
+        setZoomLevel(1);
+        setPanOffset({ x: 0, y: 0 });
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
 
   // Keyboard navigation
   useEffect(() => {
@@ -252,15 +473,36 @@ export default function PhotoView() {
 
         <div className="flex items-start gap-4 lg:gap-8">
           <div className="flex-1 flex flex-col gap-6">
-            <div className="flex-1">
-                <Card className="overflow-hidden flex-1">
-                  <div className="relative bg-black/5 w-full h-full flex items-center justify-center">
+              <div className="flex-1">
+                {isFullscreen ? (
+                  <div 
+                    className="relative bg-black w-full h-full fixed inset-0 z-50"
+                    style={{
+                      cursor: zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'
+                    }}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
+                  >
+                    <ProgressiveImage
+                      src={photo.content_url}
+                      thumbnail={`/thumbnails/${id}`}
+                      alt={photo.filename}
+                      className="h-screen w-full"
+                      style={{
+                        transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
+                        cursor: zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'
+                      }}
+                      fit="cover"
+                    />
                     {/* Edge Click Navigation - Left 15% */}
                     {photo.prev_photo_id && (
                       <Link
                         to={`/photo/${photo.prev_photo_id}`}
                         className="absolute left-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
                         title="Previous photo"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
                           <ChevronLeft className="h-8 w-8 text-white" />
@@ -274,56 +516,242 @@ export default function PhotoView() {
                         to={`/photo/${photo.next_photo_id}`}
                         className="absolute right-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
                         title="Next photo"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <div className="absolute right-1/2 top-1/2 translate-x-1/2 -translate-y-1/2">
                           <ChevronRight className="h-8 w-8 text-white" />
                         </div>
                       </Link>
                     )}
-                  
-                  {/* Tag Toggle Button */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`absolute top-2 right-2 z-20 h-8 w-8 p-0 ${showTags ? 'bg-primary text-white' : 'bg-black/50 hover:bg-black/70 text-white'}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowTags(!showTags);
-                    }}
-                    title={showTags ? 'Hide Tags' : 'Show Tags'}
-                  >
-                    <Tag className="h-4 w-4" />
-                  </Button>
-                  
-                  <ProgressiveImage
-                    src={photo.content_url}
-                    thumbnail={`/thumbnails/${id}`}
-                    alt={photo.filename}
-                    className="h-full w-full object-contain rounded-lg"
-                  />
-                  
-                  {/* Tag Markers Overlay */}
-                  {showTags && tags.map((tag) => (
-                    <div
-                      key={tag.id}
-                      className="absolute group"
-                      style={{
-                        left: `${tag.posX}%`,
-                        top: `${tag.posY}%`,
-                        transform: 'translate(-50%, -50%)'
-                      }}
-                    >
-                      {/* Large invisible hover area */}
-                      <div className="w-16 h-16 -ml-8 -mt-8 cursor-pointer" />
-                      {/* Tag label tooltip */}
-                      <div className="absolute left-1/2 top-full mt-1 px-2 py-1 bg-black/70 text-white text-xs rounded whitespace-nowrap pointer-events-none -translate-x-1/2 opacity-100">
-                        {tag.name}
-                      </div>
+                    
+                    {/* Controls Container */}
+                    <div className="absolute top-2 right-2 z-30 flex gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleZoomIn();
+                        }}
+                        title="Zoom In"
+                      >
+                        <ZoomIn className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleZoomOut();
+                        }}
+                        title="Zoom Out"
+                      >
+                        <ZoomOut className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleResetZoom();
+                        }}
+                        title="Reset Zoom"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFullscreen();
+                        }}
+                        title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                      >
+                        {isFullscreen ? (
+                          <Minimize2 className="h-4 w-4" />
+                        ) : (
+                          <Maximize2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className={`h-8 w-8 p-0 ${showTags ? 'bg-primary text-white' : 'bg-black/50 hover:bg-black/70 text-white'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowTags(!showTags);
+                        }}
+                        title={showTags ? 'Hide Tags' : 'Show Tags'}
+                      >
+                        <Tag className="h-4 w-4" />
+                      </Button>
                     </div>
-                  ))}
-                </div>
-              </Card>
-            </div>
+                    
+                    {/* Tag Markers Overlay */}
+                    {tags.map((tag) => (
+                      <div
+                        key={tag.id}
+                        className={`absolute group ${hoveredTagId === tag.id ? 'z-40' : ''}`}
+                        style={{
+                          left: `${tag.posX}%`,
+                          top: `${tag.posY}%`,
+                          transform: 'translate(-50%, -50%)',
+                          opacity: showTags || hoveredTagId === tag.id ? 1 : 0,
+                          pointerEvents: showTags || hoveredTagId === tag.id ? 'auto' : 'none'
+                        }}
+                      >
+                        <div className="w-16 h-16 -ml-8 -mt-8 cursor-pointer" />
+                        <div className={`absolute w-3 h-3 rounded-full transform -translate-x-1/2 -translate-y-1/2 transition-all duration-200 ${
+                          hoveredTagId === tag.id 
+                            ? 'bg-yellow-400 scale-150 shadow-lg shadow-yellow-400/50' 
+                            : 'bg-primary'
+                        }`} />
+                        <div className={`absolute left-1/2 top-full mt-1 px-2 py-1 bg-black/70 text-white text-xs rounded whitespace-nowrap pointer-events-none -translate-x-1/2 transition-opacity duration-200 ${
+                          hoveredTagId === tag.id ? 'opacity-100' : 'opacity-70'
+                        }`}>
+                          {tag.name}
+                        </div>
+                        {hoveredTagId === tag.id && user && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTag(tag.id);
+                            }}
+                            className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-50"
+                            title="Delete tag"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Card className="overflow-hidden flex-1">
+                    <div className="relative bg-black/5 w-full h-full flex items-center justify-center">
+                      {/* Edge Click Navigation - Left 15% */}
+                      {photo.prev_photo_id && (
+                        <Link
+                          to={`/photo/${photo.prev_photo_id}`}
+                          className="absolute left-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
+                          title="Previous photo"
+                        >
+                          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                            <ChevronLeft className="h-8 w-8 text-white" />
+                          </div>
+                        </Link>
+                      )}
+
+                      {/* Edge Click Navigation - Right 15% */}
+                      {photo.next_photo_id && (
+                        <Link
+                          to={`/photo/${photo.next_photo_id}`}
+                          className="absolute right-0 top-0 h-full w-1/6 cursor-pointer z-20 opacity-0 hover:opacity-50 transition-opacity bg-black/50"
+                          title="Next photo"
+                        >
+                          <div className="absolute right-1/2 top-1/2 translate-x-1/2 -translate-y-1/2">
+                            <ChevronRight className="h-8 w-8 text-white" />
+                          </div>
+                        </Link>
+                      )}
+                    
+                      {/* Controls Container */}
+                      <div className="absolute top-2 right-2 z-20 flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 bg-black/50 hover:bg-black/70 text-white"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFullscreen();
+                          }}
+                          title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+                        >
+                          {isFullscreen ? (
+                            <Minimize2 className="h-4 w-4" />
+                          ) : (
+                            <Maximize2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={`h-8 w-8 p-0 ${showTags ? 'bg-primary text-white' : 'bg-black/50 hover:bg-black/70 text-white'}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowTags(!showTags);
+                          }}
+                          title={showTags ? 'Hide Tags' : 'Show Tags'}
+                        >
+                          <Tag className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      
+                      <ProgressiveImage
+                        src={photo.content_url}
+                        thumbnail={`/thumbnails/${id}`}
+                        alt={photo.filename}
+                        className="h-full w-full rounded-lg transition-transform"
+                        style={{}}
+                        fit="contain"
+                      />
+                      
+                      {/* Click area for adding tags (behind navigation and controls) */}
+                      {user && (
+                        <div 
+                          className="absolute inset-0 z-5 cursor-crosshair"
+                          onClick={handleImageClick}
+                          title="Click to add a tag"
+                        />
+                      )}
+                      
+                      {/* Tag Markers Overlay */}
+                      {tags.map((tag) => (
+                        <div
+                          key={tag.id}
+                          className={`absolute group ${hoveredTagId === tag.id ? 'z-40' : ''}`}
+                          style={{
+                            left: `${tag.posX}%`,
+                            top: `${tag.posY}%`,
+                            transform: 'translate(-50%, -50%)',
+                            opacity: showTags || hoveredTagId === tag.id ? 1 : 0,
+                            pointerEvents: showTags || hoveredTagId === tag.id ? 'auto' : 'none'
+                          }}
+                        >
+                          <div className="w-16 h-16 -ml-8 -mt-8 cursor-pointer" />
+                          <div className={`absolute w-3 h-3 rounded-full transform -translate-x-1/2 -translate-y-1/2 transition-all duration-200 ${
+                            hoveredTagId === tag.id 
+                              ? 'bg-yellow-400 scale-150 shadow-lg shadow-yellow-400/50' 
+                              : 'bg-primary'
+                          }`} />
+                          <div className={`absolute left-1/2 top-full mt-1 px-2 py-1 bg-black/70 text-white text-xs rounded whitespace-nowrap pointer-events-none -translate-x-1/2 transition-opacity duration-200 ${
+                            hoveredTagId === tag.id ? 'opacity-100' : 'opacity-70'
+                          }`}>
+                            {tag.name}
+                          </div>
+                          {hoveredTagId === tag.id && user && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTag(tag.id);
+                              }}
+                              className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-50"
+                              title="Delete tag"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+              </div>
 
             <div className="w-full space-y-4">
               <Card>
@@ -400,7 +828,24 @@ export default function PhotoView() {
                {/* Tags Section */}
                <Card>
                  <CardContent className="p-6">
-                   <h3 className="font-semibold mb-4 text-sm text-foreground">Tags ({tags.length})</h3>
+                   <div className="flex items-center justify-between mb-4">
+                     <h3 className="font-semibold text-sm text-foreground">Tags ({tags.length})</h3>
+                     {user && (
+                       <Button 
+                         variant="outline" 
+                         size="sm"
+                         onClick={() => {
+                           setTagPosition({ x: 50, y: 50 });
+                           setNewTagName('');
+                           setTagError('');
+                           setIsTagDialogOpen(true);
+                         }}
+                       >
+                         <Plus className="h-4 w-4 mr-1" />
+                         Add Tag
+                       </Button>
+                     )}
+                   </div>
                    
                    {/* Tags List */}
                    <div className="flex flex-wrap gap-2 mb-4">
@@ -410,9 +855,27 @@ export default function PhotoView() {
                        tags.map((tag) => (
                          <span 
                            key={tag.id} 
-                           className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm bg-primary/10 text-primary"
+                           className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm cursor-pointer transition-all duration-200 ${
+                             hoveredTagId === tag.id 
+                               ? 'bg-yellow-400 text-black scale-105 shadow-md' 
+                               : 'bg-primary/10 text-primary hover:bg-primary/20'
+                           }`}
+                           onMouseEnter={() => setHoveredTagId(tag.id)}
+                           onMouseLeave={() => setHoveredTagId(null)}
                          >
                            {tag.name}
+                           {user && (
+                             <button
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 handleDeleteTag(tag.id);
+                               }}
+                               className="ml-1 p-0.5 hover:bg-red-500 hover:text-white rounded transition-colors"
+                               title="Delete tag"
+                             >
+                               <X className="w-3 h-3" />
+                             </button>
+                           )}
                          </span>
                        ))
                      )}
@@ -537,6 +1000,96 @@ export default function PhotoView() {
               </Button>
               <Button onClick={updatePhotoDescription}>
                 Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Add Tag Dialog */}
+        <Dialog open={isTagDialogOpen} onOpenChange={setIsTagDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add Tag to Photo</DialogTitle>
+              <DialogDescription>
+                Click on the thumbnail to set tag position. Start typing to find existing tags or create a new one.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              {/* Thumbnail preview with position marker */}
+              <div 
+                className="relative w-full bg-black rounded-lg overflow-hidden cursor-crosshair"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = ((e.clientX - rect.left) / rect.width) * 100;
+                  const y = ((e.clientY - rect.top) / rect.height) * 100;
+                  setTagPosition({ x, y });
+                  // Focus the tag name input after setting the position
+                  setTimeout(() => {
+                    tagNameInputRef.current?.focus();
+                  }, 100);
+                }}
+              >
+                <img 
+                  src={`/thumbnails/${id}?v=${photo?.updated_at || Date.now()}`} 
+                  alt="Thumbnail preview" 
+                  className="w-full h-auto object-contain"
+                />
+                {/* Pulsing marker with alternating black/white for visibility */}
+                <div 
+                  className="absolute w-5 h-5 transform -translate-x-1/2 -translate-y-1/2"
+                  style={{ left: `${tagPosition.x}%`, top: `${tagPosition.y}%` }}
+                >
+                  {/* Outer ring that pulses */}
+                  <div className="absolute inset-0 w-full h-full rounded-full border-2 border-white animate-pulse" />
+                  {/* Inner circle that alternates */}
+                  <div className="absolute inset-1 w-3 h-3 rounded-full bg-white animate-pulse" />
+                  {/* Center dot */}
+                  <div className="absolute inset-2 w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
+                </div>
+              </div>
+              
+              {/* Tag name input with autocomplete */}
+              <div className="relative">
+                <Input
+                  ref={tagNameInputRef}
+                  placeholder="Type to search or create tag..."
+                  value={newTagName}
+                  onChange={(e) => {
+                    setNewTagName(e.target.value);
+                    setTagError('');
+                  }}
+                  onFocus={() => setShowSuggestions(newTagName.trim().length > 0)}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                />
+                {tagError && (
+                  <p className="text-sm text-red-500 mt-1">{tagError}</p>
+                )}
+                
+                {/* Autocomplete dropdown */}
+                {showSuggestions && tagSuggestions.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-background border border-input rounded-md shadow-lg max-h-48 overflow-y-auto">
+                    {tagSuggestions.map((tag) => (
+                      <div
+                        key={tag.id}
+                        className="px-3 py-2 hover:bg-accent cursor-pointer text-sm"
+                        onClick={() => {
+                          setNewTagName(tag.name);
+                          setShowSuggestions(false);
+                        }}
+                      >
+                        {tag.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsTagDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleAddTag} disabled={isSubmittingTag || !newTagName.trim()}>
+                {isSubmittingTag ? 'Adding...' : 'Add Tag'}
               </Button>
             </DialogFooter>
           </DialogContent>

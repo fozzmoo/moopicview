@@ -29,7 +29,7 @@ export default function Collections() {
     } else {
       loadCollections();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [params.id]);
 
   const loadCollections = async () => {
@@ -211,6 +211,9 @@ export default function Collections() {
                             <p className="text-sm font-medium truncate">{photo.filename}</p>
                             <p className="text-xs text-muted-foreground mt-1">
                               {formatDate(photo.photo_date, photo.date_precision)}
+                              {photo.tag_count > 0 && (
+                                <span className="ml-1">({photo.tag_count} tags)</span>
+                              )}
                             </p>
                           </CardContent>
                         </Card>

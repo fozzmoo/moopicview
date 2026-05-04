@@ -251,7 +251,7 @@ func main() {
 	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
-	r.HandleFunc("/thumbnails/{id}", photoThumbnailHandler).Methods("GET")
+	r.HandleFunc("/thumbnails/{id}", photoThumbnailHandler).Methods("GET", "HEAD")
 	r.HandleFunc("/api/photos/{id}/comments", photoCommentsHandler).Methods("GET")
 	r.HandleFunc("/api/photos/{id}/tags", photoTagsHandler).Methods("GET")
 	r.HandleFunc("/api/tags", tagsHandler).Methods("GET")
@@ -287,7 +287,21 @@ func main() {
 	adminRouter.HandleFunc("/photos/{id}/description", adminPhotoDescriptionHandler).Methods("POST")
 
 	// Serve React SPA
-	r.PathPrefix("/").HandlerFunc(spaHandler)
+	r.HandleFunc("/", spaHandler).Methods("GET")
+	r.HandleFunc("/login", spaHandler).Methods("GET")
+	r.HandleFunc("/collections", spaHandler).Methods("GET")
+	r.HandleFunc("/collections/{id}", spaHandler).Methods("GET")
+	r.HandleFunc("/photo/{id}", spaHandler).Methods("GET")
+	r.HandleFunc("/tags", spaHandler).Methods("GET")
+	r.HandleFunc("/tags/{id}", spaHandler).Methods("GET")
+	r.HandleFunc("/account", spaHandler).Methods("GET")
+	r.HandleFunc("/admin", spaHandler).Methods("GET")
+	r.HandleFunc("/reset-password", spaHandler).Methods("GET")
+	
+	// Static assets
+	r.PathPrefix("/assets/").HandlerFunc(spaHandler).Methods("GET")
+	r.PathPrefix("/favicon").HandlerFunc(spaHandler).Methods("GET")
+	r.PathPrefix("/index.html").HandlerFunc(spaHandler).Methods("GET")
 
 	log.Printf("Starting MoopicView server on %s", port)
 	go scanPhotos()
@@ -588,11 +602,6 @@ func sendEmail(to, subject, body string) error {
 }
 
 func spaHandler(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/thumbnails") {
-		http.NotFound(w, r)
-		return
-	}
-
 	// Determine frontend dist path
 	frontendDist := os.Getenv("FRONTEND_DIST")
 	if frontendDist == "" {
@@ -600,17 +609,17 @@ func spaHandler(w http.ResponseWriter, r *http.Request) {
 		frontendDist = "../../frontend/dist"
 	}
 
- 	// Handle all routes that should serve index.html
-	if r.URL.Path == "/" || r.URL.Path == "/login" ||
-		r.URL.Path == "/collections" || strings.HasPrefix(r.URL.Path, "/collections/") ||
-		strings.HasPrefix(r.URL.Path, "/photo") ||
-		r.URL.Path == "/tags" || strings.HasPrefix(r.URL.Path, "/tags/") ||
-		r.URL.Path == "/account" || r.URL.Path == "/admin" ||
-		r.URL.Path == "/reset-password" {
-		http.ServeFile(w, r, filepath.Join(frontendDist, "index.html"))
+	// Check if the path is for a static asset
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/favicon") || strings.HasPrefix(path, "/index.html") {
+		// Serve the static file
+		filePath := filepath.Join(frontendDist, path)
+		http.ServeFile(w, r, filePath)
 		return
 	}
-	http.FileServer(http.Dir(frontendDist)).ServeHTTP(w, r)
+
+	// For all other routes, serve the index.html (SPA routing)
+	http.ServeFile(w, r, filepath.Join(frontendDist, "index.html"))
 }
 
 func collectionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1110,7 +1119,7 @@ func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 	// Determine cache directory
 	cacheDir := os.Getenv("THUMBNAIL_CACHE_DIR")
 	if cacheDir == "" {
-		cacheDir = "/opt/mooview/cache"
+		cacheDir = "/mooview_cache"
 	}
 
 	// Create cache directory if it doesn't exist
@@ -1125,11 +1134,37 @@ func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Check if thumbnail already exists
 	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+		// Read EXIF data to get orientation first
+		var orientationVal int
+		file, err := os.Open(filepathStr)
+		if err == nil {
+			// Decode EXIF data
+			exifData, err := exif.Decode(file)
+			if err == nil {
+				// Get orientation tag
+				orientation, err := exifData.Get(exif.Orientation)
+				if err == nil {
+					orientationVal, _ = orientation.Int(0)
+				}
+			}
+			file.Close()
+		}
+
 		// Thumbnail doesn't exist, generate it
 		img, err := imaging.Open(filepathStr)
 		if err != nil {
 			http.Error(w, "Failed to open image", http.StatusInternalServerError)
 			return
+		}
+
+		// Apply orientation transformation based on EXIF data
+		switch orientationVal {
+		case 3: // 180 degrees rotation
+			img = imaging.Rotate180(img)
+		case 6: // 90 degrees clockwise
+			img = imaging.Rotate270(img)
+		case 8: // 90 degrees counter-clockwise
+			img = imaging.Rotate90(img)
 		}
 
 		// Resize to 300px width, maintain aspect ratio (height = 0 for auto)
@@ -2002,10 +2037,13 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get photos in this folder only (not subfolders)
 	photoRows, err := db.Query(`
-		SELECT id, filepath, filename, collection, photo_date::text, date_precision
-		FROM photos
-		WHERE folder_id = $1
-		ORDER BY filename
+		SELECT p.id, p.filepath, p.filename, p.collection, p.photo_date::text, p.date_precision, 
+		       COUNT(pt.tag_id) as tag_count
+		FROM photos p
+		LEFT JOIN photo_tags pt ON p.id = pt.photo_id
+		WHERE p.folder_id = $1
+		GROUP BY p.id
+		ORDER BY p.filename
 	`, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2017,13 +2055,15 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 	for photoRows.Next() {
 		var photoID int
 		var filepath, filename, collection, photoDate, datePrecision string
-		photoRows.Scan(&photoID, &filepath, &filename, &collection, &photoDate, &datePrecision)
+		var tagCount int
+		photoRows.Scan(&photoID, &filepath, &filename, &collection, &photoDate, &datePrecision, &tagCount)
 		photos = append(photos, map[string]interface{}{
 			"id":             photoID,
 			"filename":       filename,
 			"collection":     collection,
 			"photo_date":     photoDate,
 			"date_precision": datePrecision,
+			"tag_count":      tagCount,
 			"url":            fmt.Sprintf("/api/photos/%d/content", photoID),
 		})
 	}
