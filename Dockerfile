@@ -1,15 +1,9 @@
-FROM golang:1.25-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o moopicview ./cmd/server
-
-FROM alpine:latest
+FROM alpine:latest AS app
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
-COPY --from=builder /app/moopicview .
-COPY --from=builder /app/DESIGN.md .
-COPY --from=builder /app/frontend/dist ./frontend/dist
+# Copy pre-built binary from host
+COPY moopicview-server ./moopicview
+COPY DESIGN.md .
+COPY frontend/dist ./frontend/dist
 EXPOSE 8080
 CMD ["./moopicview"]

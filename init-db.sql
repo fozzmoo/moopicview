@@ -121,6 +121,9 @@ CREATE INDEX idx_comments_photo_id ON comments(photo_id);
 CREATE INDEX idx_comments_user_id ON comments(user_id);
 CREATE INDEX idx_proposed_edits_photo_id ON proposed_edits(photo_id);
 CREATE INDEX idx_proposed_edits_status ON proposed_edits(status);
+CREATE INDEX idx_photo_tags_tag_id ON photo_tags(tag_id);
+CREATE INDEX idx_tags_name ON tags(name);
+CREATE INDEX idx_photos_folder_id_filename ON photos(folder_id, filename);
 
 -- Create the first admin user (password will be set via CLI or setup)
 INSERT INTO users (email, name, role, approved) VALUES (

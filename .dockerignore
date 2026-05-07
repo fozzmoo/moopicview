@@ -1,0 +1,16 @@
+node_modules
+frontend/node_modules
+*.log
+.git
+.gitignore
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.nyc_output
+coverage
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx

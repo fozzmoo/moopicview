@@ -60,9 +60,17 @@ External Clients --HTTPS--> lok (Caddy reverse proxy)
 ```
 
 - Go server (in Docker on `tic`) serves both API and built React static files
+- Shared PostgreSQL connection pool (25 max open, 5 idle, 5min lifetime)
 - Caddy on `lok` handles TLS termination and proxies to the container
 - Photos served via protected `/api/photos/content/:id` endpoint with auth middleware
 - Background goroutine scans and watches for new photos on startup (fsnotify on mounted volume)
+
+### Performance Optimizations
+- **Database Connection Pooling**: Single shared `*sql.DB` pool initialized at startup, replacing per-request `sql.Open()`/`db.Close()` calls that created a new TCP connection + PostgreSQL auth handshake on every request
+- **Collections Endpoint**: `GET /api/collections` uses `SELECT` (read-only) instead of `INSERT...ON CONFLICT` (write) on every page load; photo count uses `JOIN` instead of `IN(SELECT...)` subquery
+- **Tag Operations**: `POST /api/photos/:id/tags` reduced from 4 sequential DB queries to 2 using `ON CONFLICT DO NOTHING` and `RowsAffected()` check; eliminated redundant photo-exists and duplicate-association checks
+- **Frontend**: Removed redundant full photo refresh after tag add (POST response already contains tag data)
+- **Thumbnail Generation**: Uses Box filter (faster than Lanczos); EXIF orientation read from JPEG SOF marker with size gate (>100KB files only)
 
 ## 4. Data Model (PostgreSQL)
 
@@ -108,7 +116,7 @@ proposed_edits (
 activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 ```
 
-**Indexes:** On filepath (unique), scan_date, description (fulltext if possible), tags.
+**Indexes:** On filepath (unique), scan_date, description (fulltext if possible), tags, photo_tags(photo_id), photo_tags(tag_id), tags(name), photos(folder_id, filename).
 
 ## 5. Authentication & Authorization
 
@@ -133,7 +141,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Level 3: Event/folder names (e.g., 20170625-FortBuenaVentura, 20240404)
   - Level 4: Photo grid in each folder
 - **Search**: By filename, description, date (supports partial dates), tags (full-text where possible)
-- **View & Download**: Lightbox viewer with EXIF if available, download button
+- **View & Download**: Lightbox viewer with EXIF if available, download button, copy to clipboard
 - **Comment**: Threaded comments per photo
 - **Tag**: Add/remove shared global tags to photos with position and visibility controls
   - Tags are stored in a global `tags` table and associated with photos via `photo_tags` junction table
@@ -144,6 +152,8 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - **Accurate Coordinate Calculation**: Account for letterboxing in images displayed with `object-contain`
   - **Tag Visibility Toggle**: Tag icon button (top-right of image) to show/hide all tags on image (hidden by default)
   - **Hover-to-Reveal**: Tag labels appear when hovering over tag markers on the image
+  - **Tag Click Navigation**: Clicking a tag in the Tags section navigates to the tag's photo grid page
+  - **Tag Hover Highlight**: Hovering over a tag in the Tags section highlights the corresponding tag marker on the image
   - **Tag Search/Browse**: Dedicated page listing all tags with photo counts
   - **Tag Photos Page**: View all photos associated with a specific tag
   - Tags support search and filtering (future enhancement)
@@ -152,6 +162,11 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
   - Digital photos: Auto-extract from EXIF or directory name (e.g., `20170625-FortBuenaVentura`)
   - Scanned photos: Auto-extract from filename patterns, manual entry for unknown dates
   - Admins can edit dates; users can propose date changes
+- **File Info**: On-demand metadata display parsed from file headers
+  - JPEG SOF marker parsing for colorspace (grayscale/color/CMYK) and bit depth
+  - PNG IHDR chunk parsing for color type and bit depth
+  - File size from `os.Stat()`
+  - Pixel dimensions from file header
 
 ### Admin Features
 - Create new user accounts (First name, Last name, Email, Password [optional], Admin status). If no password is provided, a password reset link is emailed.
@@ -180,8 +195,9 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - **Photo Viewer Enhancements**:
   - Vertical layout: Image takes full width, info panel below
   - Download functionality with proper filename handling
+  - Copy to clipboard (canvas-based with fetch fallback)
   - Navigation controls (previous/next) with keyboard shortcuts
-  - Metadata display: Collection, date, location
+  - Metadata display: Collection, date, file info (type, colorspace, file size, pixel dimensions)
   - Smart date formatting based on precision (June 1989 instead of 1989-06-01)
   - Admin users can edit photo date directly from viewer
   - **Comments**: List of comments from oldest to newest with user name and timestamp, plus form to post new comments (authenticated users only)
@@ -202,9 +218,9 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
    - **Generation Logic**:
      - Reads photo path from database using ID
      - Opens source image using `imaging` library
-     - Reads EXIF orientation tag (1, 3, 6, 8) and applies appropriate rotation
-     - Resizes to 300px width maintaining aspect ratio (Lanczos filter)
-     - Saves to cache directory with `.webp` extension
+     - Reads EXIF orientation tag (1, 3, 6, 8) from JPEG SOF marker and applies appropriate rotation
+     - Resizes to 300px width maintaining aspect ratio (Box filter for speed)
+     - Saves to cache directory with `.jpg` extension
    - **Caching**:
      - On-demand generation: Generates thumbnail on first request
      - Disk caching: Stores thumbnails permanently at `THUMBNAIL_CACHE_DIR` (default `/mooview_cache`)
@@ -318,6 +334,7 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - `POST /api/photos/:id/tags` (add tag to a photo - requires auth)
 - `DELETE /api/photos/:id/tags/:tagId` (remove tag from photo - requires auth)
 - `GET /api/tags` (get all available tags for autocomplete)
+- `GET /api/tags/:id` (get a single tag by ID)
 - `GET /api/tags/:id/photos` (get all photos for a specific tag)
 - `POST /api/photos/:id/propose-edit`
 
@@ -340,12 +357,13 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - ✅ `GET /api/collections` - List all collections with photo counts
 - ✅ `GET /api/collections/:id` - Get folder contents by ID
 - ✅ `GET /api/photos` - List recent photos (paginated)
-- ✅ `GET /api/photos/:id` - Get photo metadata (with prev/next navigation IDs and comments)
+- ✅ `GET /api/photos/:id` - Get photo metadata (with prev/next navigation IDs, comments, tags, and file info)
 - ✅ `GET /api/photos/:id/content` - Serve image file
 - ✅ `GET /api/photos/:id/comments` - Get comments for a photo
 - ✅ `POST /api/photos/:id/comments` - Add comment to a photo (requires auth)
 - ✅ `GET /api/photos/:id/tags` - Get tags for a photo
 - ✅ `GET /api/tags` - Get all available tags
+- ✅ `GET /api/tags/:id` - Get a single tag by ID
 - ✅ `GET /api/tags/:id/photos` - Get photos for a specific tag
 - ✅ `POST /api/photos/:id/tags` - Add tag to a photo (requires auth)
 - ✅ `DELETE /api/photos/:id/tags/:tagId` - Remove tag from photo (requires auth)
@@ -367,6 +385,8 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - ✅ Photo grid with thumbnails
 - ✅ Photo viewer with navigation (previous/next buttons, keyboard shortcuts)
 - ✅ Download functionality
+- ✅ Copy to clipboard
+- ✅ File info display (type, colorspace, file size, pixel dimensions)
 - ✅ Breadcrumb navigation
 - ✅ Search/filter photos
 - ✅ Responsive navbar
@@ -449,6 +469,8 @@ src/
 
 **PhotoView Component Features:**
 - **Image Display**: Uses `ProgressiveImage` component for thumbnail-first loading
+- **Actions**: Download and Copy to clipboard buttons
+- **File Info**: Displays file type, colorspace, file size, and pixel dimensions (e.g., "JPEG - 8-bit color - 6.2MiB - 4608x3456")
 - **Tag Markers**: Position markers overlay on the image at stored X/Y coordinates
 - **Tag Visibility Toggle**: Button (top-right of image) to show/hide all tags
 - **Tag Positioning**: Click thumbnail preview in tagging dialog to set position

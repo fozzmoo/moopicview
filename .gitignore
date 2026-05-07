@@ -2,6 +2,7 @@
 .env
 
 # Build artifacts
+moopicview
 cmd/server/moopicview
 server
 frontend/dist/

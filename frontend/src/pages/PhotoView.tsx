@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
-import { Calendar, Folder as FolderIcon, MapPin, Download, ChevronLeft, ChevronRight, Edit2, Tag, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw, Plus, X } from 'lucide-react';
+import { Calendar, Folder as FolderIcon, MapPin, Download, Copy, ChevronLeft, ChevronRight, Edit2, Tag, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw, Plus, X } from 'lucide-react';
 import { Navbar } from '../components/navbar';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -26,6 +26,7 @@ export default function PhotoView() {
   const [breadcrumbs, setBreadcrumbs] = useState<any[]>([]);
   const [comments, setComments] = useState<any[]>([]);
   const [tags, setTags] = useState<any[]>([]);
+  const [fileInfo, setFileInfo] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [editDate, setEditDate] = useState('');
@@ -51,6 +52,7 @@ export default function PhotoView() {
         setBreadcrumbs(photoRes.data.breadcrumbs || []);
         setComments(photoRes.data.comments || []);
         setTags(photoRes.data.tags || []);
+        setFileInfo(photoRes.data.file_info || '');
       } catch (err) {
         console.error(err);
       } finally {
@@ -75,6 +77,40 @@ export default function PhotoView() {
     } catch (error) {
       console.error('Download failed:', error);
       alert('Failed to download image');
+    }
+  };
+
+  const handleCopyToClipboard = async () => {
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.src = photo.content_url;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Image load timeout')), 3000);
+        img.onload = () => { clearTimeout(timeout); resolve(); };
+        img.onerror = () => { clearTimeout(timeout); reject(new Error('Image load failed')); };
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob })
+      ]);
+    } catch (error) {
+      // Fallback: try fetch-based approach
+      try {
+        const response = await fetch(photo.content_url);
+        const blob = await response.blob();
+        const type = blob.type || 'image/jpeg';
+        const item = new ClipboardItem({ [type]: blob });
+        await navigator.clipboard.write([item]);
+      } catch (fallbackError) {
+        console.error('Copy failed:', error);
+        alert('Failed to copy image to clipboard');
+      }
     }
   };
 
@@ -146,10 +182,6 @@ export default function PhotoView() {
       setTags([...tags, response.data]);
       setIsTagDialogOpen(false);
       setNewTagName('');
-      
-      // Refresh photo data to get updated tags
-      const photoRes = await api.get(`/api/photos/${id}`);
-      setTags(photoRes.data.tags || []);
     } catch (err: any) {
       console.error('Failed to add tag:', err);
       setTagError(err.response?.data || 'Failed to add tag');
@@ -805,6 +837,14 @@ export default function PhotoView() {
                         )}
                       </div>
                     </div>
+                    {fileInfo && (
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="h-4 w-4 text-muted-foreground flex-shrink-0">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-info"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                        </div>
+                        <span className="text-muted-foreground">{fileInfo}</span>
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 text-sm">
                       <MapPin className="h-4 w-4 text-muted-foreground" />
                       <span className="text-muted-foreground">Location not set</span>
@@ -820,6 +860,10 @@ export default function PhotoView() {
                     <Button variant="outline" className="w-full justify-start" onClick={handleDownload}>
                       <Download className="mr-2 h-4 w-4" />
                       Download
+                    </Button>
+                    <Button variant="outline" className="w-full justify-start" onClick={handleCopyToClipboard}>
+                      <Copy className="mr-2 h-4 w-4" />
+                      Copy
                     </Button>
                   </div>
                  </CardContent>
@@ -847,39 +891,44 @@ export default function PhotoView() {
                      )}
                    </div>
                    
-                   {/* Tags List */}
-                   <div className="flex flex-wrap gap-2 mb-4">
-                     {tags.length === 0 ? (
-                       <p className="text-sm text-muted-foreground">No tags yet</p>
-                     ) : (
-                       tags.map((tag) => (
-                         <span 
-                           key={tag.id} 
-                           className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm cursor-pointer transition-all duration-200 ${
-                             hoveredTagId === tag.id 
-                               ? 'bg-yellow-400 text-black scale-105 shadow-md' 
-                               : 'bg-primary/10 text-primary hover:bg-primary/20'
-                           }`}
-                           onMouseEnter={() => setHoveredTagId(tag.id)}
-                           onMouseLeave={() => setHoveredTagId(null)}
-                         >
-                           {tag.name}
-                           {user && (
-                             <button
-                               onClick={(e) => {
-                                 e.stopPropagation();
-                                 handleDeleteTag(tag.id);
-                               }}
-                               className="ml-1 p-0.5 hover:bg-red-500 hover:text-white rounded transition-colors"
-                               title="Delete tag"
-                             >
-                               <X className="w-3 h-3" />
-                             </button>
-                           )}
-                         </span>
-                       ))
-                     )}
-                   </div>
+                    {/* Tags List */}
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      {tags.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No tags yet</p>
+                      ) : (
+                        tags.map((tag) => (
+                          <Link 
+                            to={`/tags/${tag.id}`}
+                            key={tag.id}
+                          >
+                            <span 
+                              className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm cursor-pointer transition-all duration-200 ${
+                                hoveredTagId === tag.id 
+                                  ? 'bg-yellow-400 text-black scale-105 shadow-md' 
+                                  : 'bg-primary/10 text-primary hover:bg-primary/20'
+                              }`}
+                              onMouseEnter={() => setHoveredTagId(tag.id)}
+                              onMouseLeave={() => setHoveredTagId(null)}
+                            >
+                              {tag.name}
+                              {user && (
+                                <button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleDeleteTag(tag.id);
+                                  }}
+                                  className="ml-1 p-0.5 hover:bg-red-500 hover:text-white rounded transition-colors"
+                                  title="Delete tag"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </span>
+                          </Link>
+                        ))
+                      )}
+                    </div>
                  </CardContent>
                </Card>
 

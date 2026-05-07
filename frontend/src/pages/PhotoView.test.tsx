@@ -646,4 +646,207 @@ describe('PhotoView', () => {
       expect(screen.getByText(/Add Tag to Photo/i)).toBeInTheDocument()
     })
   })
+
+  it('displays clickable tags that navigate to tag page', async () => {
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [],
+        comments: [],
+        tags: [
+          { id: 1, name: 'Person A', posX: 25, posY: 30 },
+          { id: 2, name: 'Person B', posX: 75, posY: 40 }
+        ]
+      }
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/photo/1']}>
+        <Routes>
+          <Route path="/photo/:id" element={<PhotoView />} />
+          <Route path="/tags/:tagId" element={<div>Tag Photos Page</div>} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/Tags \(2\)/i)).toBeInTheDocument()
+    })
+
+    // Find tag links
+    const tagLinks = screen.getAllByRole('link')
+    const personALink = tagLinks.find(link => link.textContent?.includes('Person A'))
+    const personBLink = tagLinks.find(link => link.textContent?.includes('Person B'))
+
+    expect(personALink).toBeInTheDocument()
+    expect(personBLink).toBeInTheDocument()
+
+    // Check that the links point to the correct tag pages
+    expect(personALink?.getAttribute('href')).toBe('/tags/1')
+    expect(personBLink?.getAttribute('href')).toBe('/tags/2')
+  })
+
+  it('hovering over tag updates marker highlight', async () => {
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [],
+        comments: [],
+        tags: [
+          { id: 1, name: 'Person A', posX: 25, posY: 30 }
+        ]
+      }
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/photo/1']}>
+        <Routes>
+          <Route path="/photo/:id" element={<PhotoView />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/Tags \(1\)/i)).toBeInTheDocument()
+    })
+
+    // Find the tag in the list (use getAllByText since there might be multiple instances)
+    const tagElements = screen.getAllByText(/Person A/i)
+    // The tag badge is the span element that should be hoverable
+    const tagBadge = tagElements.find(el => el.tagName === 'SPAN' && el.closest('a'))
+    
+    if (tagBadge) {
+      // Hover over the tag
+      fireEvent.mouseEnter(tagBadge)
+
+      // The tag should now be highlighted (yellow background)
+      await waitFor(() => {
+        expect(tagBadge.closest('span')).toHaveClass('bg-yellow-400')
+      })
+    }
+  })
+
+  it('renders copy to clipboard button', async () => {
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [
+          { id: 0, name: 'Collections', path: '' },
+          { id: 1, name: 'Test Folder', path: '/test/path' }
+        ]
+      }
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/photo/1']}>
+        <Routes>
+          <Route path="/photo/:id" element={<PhotoView />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/test-photo.jpg/i)).toBeInTheDocument()
+    })
+
+    const copyButton = screen.getByRole('button', { name: /copy/i })
+    expect(copyButton).toBeInTheDocument()
+  })
+
+  it('calls fetch as fallback for copy to clipboard', async () => {
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        photo: {
+          id: 1,
+          filename: 'test-photo.jpg',
+          folder_id: 1,
+          folder_name: 'Test Folder',
+          photo_date: '2023-01-15',
+          description: 'Test description',
+          content_url: '/api/photos/1/content',
+          collection: 'digital',
+          prev_photo_id: null,
+          next_photo_id: 2
+        },
+        breadcrumbs: [
+          { id: 0, name: 'Collections', path: '' },
+          { id: 1, name: 'Test Folder', path: '/test/path' }
+        ]
+      }
+    })
+
+    // Mock fetch to return a blob
+    const mockBlob = new Blob(['test'], { type: 'image/jpeg' })
+    window.fetch = vi.fn().mockResolvedValue({
+      blob: vi.fn().mockResolvedValue(mockBlob),
+    })
+
+    // Mock ClipboardItem and navigator.clipboard.write
+    const mockWrite = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('ClipboardItem', class {
+      constructor(public data: Record<string, Blob>) {}
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { write: mockWrite },
+      writable: true,
+      configurable: true,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/photo/1']}>
+        <Routes>
+          <Route path="/photo/:id" element={<PhotoView />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/test-photo.jpg/i)).toBeInTheDocument()
+    })
+
+    const copyButton = screen.getByRole('button', { name: /copy/i })
+    fireEvent.click(copyButton)
+
+    // The canvas approach will fail in JSDOM (Image.onload never fires),
+    // so it should fall back to the fetch-based approach
+    await waitFor(() => {
+      expect(window.fetch).toHaveBeenCalledWith('/api/photos/1/content')
+      expect(mockWrite).toHaveBeenCalled()
+    }, { timeout: 5000 })
+
+    vi.unstubAllGlobals()
+  })
 })

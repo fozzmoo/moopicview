@@ -106,6 +106,8 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+var db *sql.DB
+
 var getDBURL = func() string {
 	if cliMode {
 		dbURL := os.Getenv("CLI_DATABASE_URL")
@@ -150,12 +152,6 @@ func isAdminMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Check if user is admin
-		db, err := sql.Open("postgres", getDBURL())
-		if err != nil {
-			http.Error(w, "DB error", http.StatusInternalServerError)
-			return
-		}
-		defer db.Close()
 
 		var role string
 		err = db.QueryRow("SELECT role FROM users WHERE email = $1", claims.Email).Scan(&role)
@@ -200,12 +196,6 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Get user ID from database
-		db, err := sql.Open("postgres", getDBURL())
-		if err != nil {
-			http.Error(w, "DB error", http.StatusInternalServerError)
-			return
-		}
-		defer db.Close()
 
 		var userID int
 		err = db.QueryRow("SELECT id FROM users WHERE email = $1", claims.Email).Scan(&userID)
@@ -232,6 +222,17 @@ func main() {
 		scanPhotos()
 		return
 	}
+
+	// Initialize shared database connection pool
+	var err error
+	db, err = sql.Open("postgres", getDBURL())
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	port := os.Getenv("LISTEN_ADDR")
 	if port == "" {
@@ -320,6 +321,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	var creds struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -329,12 +331,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	var user struct {
 		ID           int
@@ -400,6 +396,7 @@ func googleAuthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func googleAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	if oauthConfig == nil {
 		http.Error(w, "Google OAuth not configured", http.StatusInternalServerError)
 		return
@@ -453,12 +450,6 @@ func googleAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if user already exists
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	var existingUser struct {
 		ID       int
@@ -522,6 +513,7 @@ func googleAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 // sendEmail sends an email using SMTP with SSL/TLS
 func sendEmail(to, subject, body string) error {
+	var err error
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
 	smtpUser := os.Getenv("SMTP_USER")
@@ -629,8 +621,6 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rootEntries := strings.Split(rootsStr, ",")
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	collections := make([]map[string]interface{}, 0)
 	for _, entry := range rootEntries {
@@ -645,27 +635,25 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 			path = strings.TrimSpace(parts[0])
 		}
 
-		// Get the folder ID for this path, inserting if necessary
+		// Get the folder ID for this path
 		var folderID int
 		var name string
-		err := db.QueryRow(`
-			INSERT INTO folders (path, name, parent_path, collection_type)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
-			RETURNING id, name
-		`, path, filepath.Base(path), filepath.Dir(path), collectionType).Scan(&folderID, &name)
+		err := db.QueryRow(
+			"SELECT id, name FROM folders WHERE path = $1",
+			path,
+		).Scan(&folderID, &name)
 		if err != nil {
-			log.Printf("Error getting/inserting folder %s: %v", path, err)
+			log.Printf("Folder not found: %s", path)
 			continue
 		}
 
-		// Count photos in this folder and its subfolders
+		// Count photos in this folder and its subfolders using a JOIN
 		var count int
 		err = db.QueryRow(`
-			SELECT COUNT(*) FROM photos WHERE folder_id IN (
-				SELECT id FROM folders WHERE path LIKE $1 OR path = $1
-			)
-		`, path+"%").Scan(&count)
+			SELECT COUNT(*) FROM photos p
+			JOIN folders f ON p.folder_id = f.id
+			WHERE f.path LIKE $1 OR f.path = $2
+		`, path+"%", path).Scan(&count)
 		if err != nil {
 			count = 0
 		}
@@ -686,6 +674,7 @@ func collectionsHandler(w http.ResponseWriter, r *http.Request) {
 
 
 func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	var req struct {
 		Email   string `json:"email"`
 		Name    string `json:"name"`
@@ -702,12 +691,6 @@ func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Check if user already exists
 	var existingUser int
@@ -742,6 +725,7 @@ func requestAccessHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	tokenString := r.Header.Get("Authorization")
 	if tokenString == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -774,12 +758,6 @@ func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		dbURL = "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
 	}
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	var storedHash string
 	err = db.QueryRow("SELECT password_hash FROM users WHERE email = $1", email).Scan(&storedHash)
@@ -805,13 +783,6 @@ func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func scanPhotos() {
-	dbURL := getDBURL()
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		log.Println("Scan DB error:", err)
-		return
-	}
-	defer db.Close()
 
 	rootsStr := os.Getenv("PHOTO_ROOTS")
 	if rootsStr == "" {
@@ -961,6 +932,7 @@ func scanPhotos() {
 }
 
 func extractExifDate(filePath string) (time.Time, string, bool) {
+	var err error
 	f, err := os.Open(filePath)
 	if err != nil {
 		return time.Time{}, "", false
@@ -1033,12 +1005,7 @@ func extractDateFromDirName(dirName string) (time.Time, string, string, bool) {
 }
 
 func photosHandler(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	var err error
 
 	rows, err := db.Query("SELECT id, filename, description, collection FROM photos ORDER BY id DESC LIMIT 50")
 	if err != nil {
@@ -1070,8 +1037,6 @@ func photoContentHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	var filepathStr string
 	err := db.QueryRow("SELECT filepath FROM photos WHERE id = $1", id).Scan(&filepathStr)
@@ -1100,21 +1065,13 @@ func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
-	
-	log.Printf("Thumbnail request for photo ID: %d", id)
-
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	var filepathStr string
 	err := db.QueryRow("SELECT filepath FROM photos WHERE id = $1", id).Scan(&filepathStr)
 	if err != nil {
-		log.Printf("Photo not found for ID %d: %v", id, err)
 		http.Error(w, "Photo not found", http.StatusNotFound)
 		return
 	}
-	
-	log.Printf("Found photo path: %s", filepathStr)
 
 	// Determine cache directory
 	cacheDir := os.Getenv("THUMBNAIL_CACHE_DIR")
@@ -1128,57 +1085,54 @@ func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate cache filename (replace path separators with underscores)
-	cacheFilename := strings.ReplaceAll(strings.TrimPrefix(filepathStr, "/"), "/", "_")
-	cachePath := filepath.Join(cacheDir, cacheFilename+".jpg")
+		// Generate cache filename (replace path separators with underscores)
+		cacheFilename := strings.ReplaceAll(strings.TrimPrefix(filepathStr, "/"), "/", "_")
+		cachePath := filepath.Join(cacheDir, cacheFilename+".jpg")
 
-	// Check if thumbnail already exists
-	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
-		// Read EXIF data to get orientation first
-		var orientationVal int
-		file, err := os.Open(filepathStr)
-		if err == nil {
-			// Decode EXIF data
-			exifData, err := exif.Decode(file)
-			if err == nil {
-				// Get orientation tag
-				orientation, err := exifData.Get(exif.Orientation)
-				if err == nil {
-					orientationVal, _ = orientation.Int(0)
-				}
+		// Check if thumbnail already exists
+		if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+			// Thumbnail doesn't exist, generate it
+			img, err := imaging.Open(filepathStr)
+			if err != nil {
+				http.Error(w, "Failed to open image", http.StatusInternalServerError)
+				return
 			}
-			file.Close()
+
+			// Try to read EXIF orientation (only for larger files)
+			var orientationVal int
+			file, err := os.Open(filepathStr)
+			if err == nil {
+				if info, err := file.Stat(); err == nil && info.Size() > 100000 {
+					exifData, err := exif.Decode(file)
+					if err == nil {
+						orientation, err := exifData.Get(exif.Orientation)
+						if err == nil {
+							orientationVal, _ = orientation.Int(0)
+						}
+					}
+				}
+				file.Close()
+			}
+
+			// Apply orientation if needed
+			switch orientationVal {
+			case 3: img = imaging.Rotate180(img)
+			case 6: img = imaging.Rotate270(img)
+			case 8: img = imaging.Rotate90(img)
+			}
+
+			// Resize using faster Box filter
+			thumbnail := imaging.Resize(img, 300, 0, imaging.Box)
+
+			// Save thumbnail
+			err = imaging.Save(thumbnail, cachePath)
+			if err != nil {
+				http.Error(w, "Failed to save thumbnail", http.StatusInternalServerError)
+				return
+			}
 		}
 
-		// Thumbnail doesn't exist, generate it
-		img, err := imaging.Open(filepathStr)
-		if err != nil {
-			http.Error(w, "Failed to open image", http.StatusInternalServerError)
-			return
-		}
-
-		// Apply orientation transformation based on EXIF data
-		switch orientationVal {
-		case 3: // 180 degrees rotation
-			img = imaging.Rotate180(img)
-		case 6: // 90 degrees clockwise
-			img = imaging.Rotate270(img)
-		case 8: // 90 degrees counter-clockwise
-			img = imaging.Rotate90(img)
-		}
-
-		// Resize to 300px width, maintain aspect ratio (height = 0 for auto)
-		thumbnail := imaging.Resize(img, 300, 0, imaging.Lanczos)
-
-		// Save thumbnail to cache
-		err = imaging.Save(thumbnail, cachePath)
-		if err != nil {
-			http.Error(w, "Failed to save thumbnail", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Serve the thumbnail
+		// Serve the thumbnail
 	file, err := os.Open(cachePath)
 	if err != nil {
 		http.Error(w, "File error", http.StatusInternalServerError)
@@ -1196,13 +1150,194 @@ func photoThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, file)
 }
 
+func getFileInfo(filepathStr string) string {
+	ext := strings.ToLower(filepath.Ext(filepathStr))
+	var fileType string
+	switch ext {
+	case ".jpg", ".jpeg":
+		fileType = "JPEG"
+	case ".png":
+		fileType = "PNG"
+	case ".gif":
+		fileType = "GIF"
+	case ".tiff", ".tif":
+		fileType = "TIFF"
+	case ".webp":
+		fileType = "WebP"
+	default:
+		fileType = strings.TrimPrefix(ext, ".")
+		if fileType == "" {
+			fileType = "Unknown"
+		}
+	}
+
+	fi, err := os.Stat(filepathStr)
+	if err != nil {
+		return fileType
+	}
+	size := fi.Size()
+	var sizeStr string
+	switch {
+	case size >= 1<<20:
+		sizeStr = fmt.Sprintf("%.1fMiB", float64(size)/(1<<20))
+	case size >= 1<<10:
+		sizeStr = fmt.Sprintf("%.1fKiB", float64(size)/(1<<10))
+	default:
+		sizeStr = fmt.Sprintf("%dB", size)
+	}
+
+	// Read image header for dimensions and colorspace
+	colorInfo := ""
+	f, err := os.Open(filepathStr)
+	if err == nil {
+		defer f.Close()
+		header := make([]byte, 32)
+		n, _ := f.Read(header)
+		if n >= 2 && header[0] == 0xFF && header[1] == 0xD8 {
+			// JPEG: read SOF marker for component info
+			f.Seek(2, io.SeekStart)
+			buf := make([]byte, 16)
+			for {
+				if _, err := f.Read(buf[:2]); err != nil {
+					break
+				}
+				if buf[0] != 0xFF {
+					break
+				}
+				marker := buf[1]
+				if marker == 0x00 || marker == 0xFF {
+					continue
+				}
+				if marker == 0xD9 || marker == 0xDA {
+					break
+				}
+				// SOF markers: 0xC0-0xCF (except 0xC4 DHT and 0xC8 JPEG extension)
+				if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 {
+					// SOF segment: 2-byte length, 1-byte precision, 2-byte height, 2-byte width, 1-byte numComponents
+					if _, err := io.ReadFull(f, buf[:8]); err != nil {
+						break
+					}
+					precision := int(buf[2])
+					_ = int(buf[3])<<8 | int(buf[4]) // height
+					_ = int(buf[5])<<8 | int(buf[6]) // width
+					numComponents := int(buf[7])
+					switch {
+					case numComponents == 1:
+						colorInfo = fmt.Sprintf("%d-bit grayscale", precision)
+					case numComponents == 3:
+						colorInfo = fmt.Sprintf("%d-bit color", precision)
+					case numComponents == 4:
+						colorInfo = fmt.Sprintf("%d-bit CMYK", precision)
+					default:
+						colorInfo = fmt.Sprintf("%d-bit %dch", precision, numComponents)
+					}
+					break
+				}
+				// Skip this marker's payload
+				if _, err := io.ReadFull(f, buf[:2]); err != nil {
+					break
+				}
+				length := int(buf[0])<<8 | int(buf[1])
+				if length < 2 {
+					break
+				}
+				io.CopyN(io.Discard, f, int64(length-2))
+			}
+		} else if n >= 16 && string(header[4:8]) == "IHDR" {
+			// PNG: IHDR chunk data starts at byte 8
+			// Width: bytes 8-11, Height: bytes 12-15, Bit depth: byte 16, Color type: byte 17
+			if n >= 18 {
+				bitDepth := int(header[16])
+				colorType := int(header[17])
+				switch colorType {
+				case 0:
+					colorInfo = fmt.Sprintf("%d-bit grayscale", bitDepth)
+				case 2:
+					colorInfo = fmt.Sprintf("%d-bit color", bitDepth)
+				case 3:
+					colorInfo = fmt.Sprintf("%d-bit indexed", bitDepth)
+				case 4:
+					colorInfo = fmt.Sprintf("%d-bit grayscale+alpha", bitDepth)
+				case 6:
+					colorInfo = fmt.Sprintf("%d-bit color+alpha", bitDepth)
+				}
+			}
+		}
+	}
+
+	dimensions := ""
+	if width, height, ok := getPhotoDimensions(filepathStr); ok {
+		dimensions = fmt.Sprintf("%dx%d", width, height)
+	}
+
+	parts := []string{fileType}
+	if colorInfo != "" {
+		parts = append(parts, colorInfo)
+	}
+	parts = append(parts, sizeStr)
+	if dimensions != "" {
+		parts = append(parts, dimensions)
+	}
+	return strings.Join(parts, " - ")
+}
+
+func getPhotoDimensions(filepathStr string) (int, int, bool) {
+	f, err := os.Open(filepathStr)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer f.Close()
+	header := make([]byte, 32)
+	n, _ := f.Read(header)
+	if n < 2 {
+		return 0, 0, false
+	}
+	if header[0] == 0xFF && header[1] == 0xD8 {
+		// JPEG
+		f.Seek(2, io.SeekStart) // seek back after SOI
+		buf := make([]byte, 16)
+		for {
+			if _, err := f.Read(buf[:2]); err != nil {
+				break
+			}
+			if buf[0] != 0xFF {
+				break
+			}
+			marker := buf[1]
+			if marker == 0xD9 || marker == 0xDA {
+				break
+			}
+			if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 {
+				if _, err := io.ReadFull(f, buf[:8]); err != nil {
+					break
+				}
+				height := int(buf[3])<<8 | int(buf[4])
+				width := int(buf[5])<<8 | int(buf[6])
+				return width, height, true
+			}
+			if _, err := io.ReadFull(f, buf[:2]); err != nil {
+				break
+			}
+			length := int(buf[0])<<8 | int(buf[1])
+			if length < 2 {
+				break
+			}
+			io.CopyN(io.Discard, f, int64(length-2))
+		}
+	} else if n >= 16 && string(header[4:8]) == "IHDR" {
+		// PNG: Width at bytes 8-11, Height at bytes 12-15
+		width := int(header[8])<<24 | int(header[9])<<16 | int(header[10])<<8 | int(header[11])
+		height := int(header[12])<<24 | int(header[13])<<16 | int(header[14])<<8 | int(header[15])
+		return width, height, true
+	}
+	return 0, 0, false
+}
+
 func photoHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
    	var photo struct {
    		ID             int      `json:"id"`
@@ -1230,6 +1365,9 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
    		return
    	}
    	photo.ContentURL = fmt.Sprintf("/api/photos/%d/content", photo.ID)
+
+	// Build file info string
+	fileInfo := getFileInfo(photo.Filepath)
 
 	// Get breadcrumbs (parent folders) for the photo's folder
 	breadcrumbs := []map[string]interface{}{
@@ -1390,6 +1528,7 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"photo":       photo,
+		"file_info":   fileInfo,
 		"breadcrumbs": breadcrumbs,
 		"comments":    comments,
 		"tags":        tags,
@@ -1402,8 +1541,6 @@ func photoCommentsHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	// Check if photo exists
 	var exists bool
@@ -1482,8 +1619,6 @@ func addPhotoCommentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if photo exists
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", photoID).Scan(&exists)
@@ -1540,8 +1675,6 @@ func photoTagsHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	// Check if photo exists
 	var exists bool
@@ -1590,8 +1723,6 @@ func photoTagsHandler(w http.ResponseWriter, r *http.Request) {
 
 // tagsHandler returns all available tags (for autocomplete)
 func tagsHandler(w http.ResponseWriter, r *http.Request) {
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	rows, err := db.Query("SELECT id, name FROM tags ORDER BY name ASC")
 	if err != nil {
@@ -1626,8 +1757,6 @@ func photosByTagHandler(w http.ResponseWriter, r *http.Request) {
 	tagIdStr := vars["id"]
 	tagID, _ := strconv.Atoi(tagIdStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	// Check if tag exists
 	var tagName string
@@ -1749,41 +1878,25 @@ func addPhotoTagHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
-	// Check if photo exists
-	var exists bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM photos WHERE id = $1)", photoID).Scan(&exists)
-	if err != nil || !exists {
-		http.Error(w, "Photo not found", http.StatusNotFound)
-		return
-	}
-
-	// Get or create tag
+	// Upsert tag
 	var tagID int
-	err = db.QueryRow("INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", tagName).Scan(&tagID)
+	err := db.QueryRow("INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", tagName).Scan(&tagID)
 	if err != nil {
 		http.Error(w, "Failed to create tag", http.StatusInternalServerError)
 		return
 	}
 
-	// Check if tag is already associated with photo
-	var alreadyExists bool
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM photo_tags WHERE photo_id = $1 AND tag_id = $2)", photoID, tagID).Scan(&alreadyExists)
+	// Add tag to photo (ON CONFLICT handles duplicate detection)
+	result, err := db.Exec("INSERT INTO photo_tags (photo_id, tag_id, pos_x, pos_y) VALUES ($1, $2, $3, $4) ON CONFLICT (photo_id, tag_id) DO NOTHING", photoID, tagID, posX, posY)
 	if err != nil {
-		http.Error(w, "Failed to check tag association", http.StatusInternalServerError)
-		return
-	}
-	if alreadyExists {
-		http.Error(w, "Tag already exists for this photo", http.StatusBadRequest)
+		http.Error(w, "Failed to add tag to photo", http.StatusInternalServerError)
 		return
 	}
 
-	// Add tag to photo with position
-	_, err = db.Exec("INSERT INTO photo_tags (photo_id, tag_id, pos_x, pos_y) VALUES ($1, $2, $3, $4)", photoID, tagID, posX, posY)
-	if err != nil {
-		http.Error(w, "Failed to add tag to photo", http.StatusInternalServerError)
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		http.Error(w, "Tag already exists for this photo", http.StatusBadRequest)
 		return
 	}
 
@@ -1815,8 +1928,6 @@ func removePhotoTagHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	// Check if association exists
 	var exists bool
@@ -1850,8 +1961,6 @@ func foldersHandler(w http.ResponseWriter, r *http.Request) {
 	collectionType := r.URL.Query().Get("type")
 	parentID := r.URL.Query().Get("parent")
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	var rows *sql.Rows
 	var err error
@@ -1918,8 +2027,6 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, _ := sql.Open("postgres", getDBURL())
-	defer db.Close()
 
 	// Get folder info
 	var folder struct {
@@ -2079,12 +2186,7 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 
 // Admin handlers
 func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	var err error
 
 	rows, err := db.Query("SELECT id, email, name, role, approved, created_at FROM users ORDER BY created_at DESC")
 	if err != nil {
@@ -2115,6 +2217,7 @@ func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	var req struct {
 		FirstName string  `json:"first_name"`
 		LastName  string  `json:"last_name"`
@@ -2139,12 +2242,6 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Determine role
 	role := "user"
@@ -2241,16 +2338,11 @@ func adminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminUserApproveHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	_, err = db.Exec("UPDATE users SET approved = TRUE WHERE id = $1", id)
 	if err != nil {
@@ -2263,6 +2355,7 @@ func adminUserApproveHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminUserChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
@@ -2280,12 +2373,6 @@ func adminUserChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Hash the new password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
@@ -2306,12 +2393,7 @@ func adminUserChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminProposedEditsHandler(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	var err error
 
 	rows, err := db.Query(`
 		SELECT pe.id, pe.photo_id, pe.user_id, u.email, pe.field, pe.proposed_value, pe.current_value, pe.status, pe.created_at
@@ -2349,6 +2431,7 @@ func adminProposedEditsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminProposedEditReviewHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
@@ -2361,12 +2444,6 @@ func adminProposedEditReviewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Get the proposed edit
 	var photoID int
@@ -2407,16 +2484,11 @@ func adminProposedEditReviewHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminUserToggleAdminHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Get current role
 	var currentRole string
@@ -2445,16 +2517,11 @@ func adminUserToggleAdminHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminUserDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Check if user exists
 	var exists bool
@@ -2501,16 +2568,11 @@ func adminUserDeleteHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminUserResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Get user details
 	var email, name string
@@ -2570,6 +2632,7 @@ func adminUserResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminPhotoDateHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
@@ -2585,12 +2648,6 @@ func adminPhotoDateHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If photo_date is empty or null, set to NULL with unknown precision
 	if req.PhotoDate == "" || req.PhotoDate == "unknown" {
-		db, err := sql.Open("postgres", getDBURL())
-		if err != nil {
-			http.Error(w, "DB error", http.StatusInternalServerError)
-			return
-		}
-		defer db.Close()
 
 		_, err = db.Exec(`
 			UPDATE photos 
@@ -2612,12 +2669,6 @@ func adminPhotoDateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Update the photo date and precision
 	_, err = db.Exec(`
@@ -2635,6 +2686,7 @@ func adminPhotoDateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminPhotoDescriptionHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
@@ -2647,12 +2699,6 @@ func adminPhotoDescriptionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Update the photo description
 	_, err = db.Exec(`
@@ -2671,12 +2717,7 @@ func adminPhotoDescriptionHandler(w http.ResponseWriter, r *http.Request) {
 
 // Admin handlers for account requests
 func adminAccountRequestsHandler(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	var err error
 
 	rows, err := db.Query(`
 		SELECT id, email, name, message, status, created_at 
@@ -2711,6 +2752,7 @@ func adminAccountRequestsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminAccountRequestReviewHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	vars := mux.Vars(r)
 	idStr := vars["id"]
 	id, _ := strconv.Atoi(idStr)
@@ -2728,12 +2770,6 @@ func adminAccountRequestReviewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sql.Open("postgres", getDBURL())
-	if err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
 
 	// Get the account request details
 	var email, name string
@@ -2838,6 +2874,7 @@ func generateResetToken() (string, error) {
 }
 
 func passwordResetHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
 	if r.Method == "GET" {
 		// Serve the reset password page
 		spaHandler(w, r)
@@ -2865,12 +2902,6 @@ func passwordResetHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		db, err := sql.Open("postgres", getDBURL())
-		if err != nil {
-			http.Error(w, "DB error", http.StatusInternalServerError)
-			return
-		}
-		defer db.Close()
 
 		// Verify token and check expiration
 		var userID int
