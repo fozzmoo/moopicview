@@ -177,7 +177,7 @@ activity_logs (id, user_id, action, entity_type, entity_id, details, created_at)
 - Review/approve/reject proposed edits (triggers email to proposer)
 - Direct edit of photo metadata (including date with precision)
 - View activity logs
-- Trigger manual rescan
+- Trigger manual rescan (runs in background, returns immediately)
 - All admin endpoints are protected with role-based access control (requires admin role)
 
 ### UI/UX Features
@@ -367,7 +367,7 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - ✅ `GET /api/tags/:id/photos` - Get photos for a specific tag
 - ✅ `POST /api/photos/:id/tags` - Add tag to a photo (requires auth)
 - ✅ `DELETE /api/photos/:id/tags/:tagId` - Remove tag from photo (requires auth)
-- ✅ `POST /api/scan` - Trigger photo scan
+- ✅ `POST /api/admin/scan` - Trigger photo scan (admin only, runs in background)
 - ✅ `GET /api/admin/users` - List all users (requires admin role)
 - ✅ `POST /api/admin/users` - Create new user account (requires admin role)
 - ✅ `POST /api/admin/users/:id/approve` - Approve user account (requires admin role)
@@ -622,6 +622,7 @@ cd frontend && npm run test
 - `POST /api/admin/proposed-edits/{id}/review` - Review proposed edit
 - `POST /api/admin/photos/{id}/date` - Update photo date
 - `POST /api/admin/photos/{id}/description` - Update photo description
+- `POST /api/admin/scan` - Trigger photo scan (admin only)
 - `POST /api/scan` - Trigger photo scan (admin only)
 
 ### 13.4 Frontend SPA Routes

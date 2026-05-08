@@ -31,6 +31,8 @@ export default function AdminDashboard() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [userToDelete, setUserToDelete] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
 
   useEffect(() => {
     fetchAdminData();
@@ -199,10 +201,24 @@ export default function AdminDashboard() {
   const resetPassword = async (userId: number) => {
     try {
       await api.post(`/api/admin/users/${userId}/reset-password`);
-      alert('Password reset email sent successfully.');
-    } catch (err: any) {
+      alert('Password reset email sent');
+    } catch (err) {
       console.error('Failed to reset password:', err);
-      alert(err.response?.data || 'Failed to send password reset email.');
+      alert('Failed to reset password');
+    }
+  };
+
+  const triggerScan = async () => {
+    setScanning(true);
+    setScanMessage('');
+    try {
+      await api.post('/api/admin/scan');
+      setScanMessage('Scan started. It runs in the background and may take a few minutes.');
+    } catch (err) {
+      console.error('Failed to trigger scan:', err);
+      setScanMessage('Failed to start scan.');
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -368,6 +384,28 @@ export default function AdminDashboard() {
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Photo Scanner Section */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Photo Scanner</CardTitle>
+            <CardDescription>Scan photo directories for new, changed, or deleted files</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-4">
+              Scans all configured photo directories, adds new photos, updates changed ones,
+              and removes database records for files that no longer exist on disk.
+            </p>
+            <div className="flex items-center gap-4">
+              <Button onClick={triggerScan} disabled={scanning}>
+                {scanning ? 'Scanning...' : 'Trigger Scan'}
+              </Button>
+              {scanMessage && (
+                <p className="text-sm text-muted-foreground">{scanMessage}</p>
+              )}
+            </div>
           </CardContent>
         </Card>
 

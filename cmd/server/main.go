@@ -260,7 +260,6 @@ func main() {
 	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
 	r.HandleFunc("/api/collections/{id}", collectionHandler).Methods("GET")
 	r.HandleFunc("/api/folders", foldersHandler).Methods("GET")
-	r.HandleFunc("/api/scan", scanHandler).Methods("POST")
 	r.HandleFunc("/api/health", healthHandler).Methods("GET")
 
 	// Authenticated routes (protected by auth middleware)
@@ -286,6 +285,7 @@ func main() {
 	adminRouter.HandleFunc("/proposed-edits/{id}/review", adminProposedEditReviewHandler).Methods("POST")
 	adminRouter.HandleFunc("/photos/{id}/date", adminPhotoDateHandler).Methods("POST")
 	adminRouter.HandleFunc("/photos/{id}/description", adminPhotoDescriptionHandler).Methods("POST")
+	adminRouter.HandleFunc("/scan", scanHandler).Methods("POST")
 
 	// Serve React SPA
 	r.HandleFunc("/", spaHandler).Methods("GET")
@@ -1951,9 +1951,9 @@ func removePhotoTagHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func scanHandler(w http.ResponseWriter, r *http.Request) {
-	scanPhotos()
+	go scanPhotos()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "scan complete"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "scan started"})
 }
 
 // foldersHandler returns all folders for a given collection type or parent folder
