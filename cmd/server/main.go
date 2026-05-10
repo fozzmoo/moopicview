@@ -298,6 +298,9 @@ func main() {
 	authAPI.HandleFunc("/collections/{id}", collectionHandler).Methods("GET")
 	authAPI.HandleFunc("/folders", foldersHandler).Methods("GET")
 
+	// Thumbnail route (outside /api prefix, but still requires auth)
+	r.Handle("/thumbnails/{id}", authMiddleware(http.HandlerFunc(photoThumbnailHandler))).Methods("GET", "HEAD")
+
 	// Admin routes (require admin role)
 	adminRouter := r.PathPrefix("/api/admin").Subrouter()
 	adminRouter.Use(authMiddleware)
