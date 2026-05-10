@@ -170,15 +170,44 @@ func isAdminMiddleware(next http.Handler) http.Handler {
 }
 
 // authMiddleware checks if the requesting user is authenticated (any role)
+// extractToken gets the JWT from the Authorization header or the token cookie
+func extractToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	if cookie, err := r.Cookie("token"); err == nil {
+		return cookie.Value
+	}
+	return ""
+}
+
+// spaAuthMiddleware checks authentication for SPA page loads.
+// Redirects to /login if not authenticated.
+func spaAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenString := extractToken(r)
+		if tokenString == "" {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the JWT token from the Authorization header
-		tokenString := r.Header.Get("Authorization")
+		tokenString := extractToken(r)
 		if tokenString == "" {
 			http.Error(w, "Unauthorized: No token provided", http.StatusUnauthorized)
 			return
 		}
-		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 
 		// Parse the token
 		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
@@ -241,36 +270,37 @@ func main() {
 
 	r := mux.NewRouter()
 
-	// API routes (registered before catch-all)
-	r.HandleFunc("/api/auth/login", loginHandler).Methods("POST")
-	r.HandleFunc("/api/auth/google", googleAuthHandler).Methods("GET")
-	r.HandleFunc("/api/auth/google/callback", googleAuthCallbackHandler).Methods("GET")
-	r.HandleFunc("/api/auth/request-access", requestAccessHandler).Methods("POST")
-	r.HandleFunc("/api/auth/change-password", changePasswordHandler).Methods("POST")
-	r.HandleFunc("/api/auth/reset-password", passwordResetHandler).Methods("POST")
-	r.HandleFunc("/reset-password", passwordResetHandler).Methods("GET")
-	r.HandleFunc("/api/photos", photosHandler).Methods("GET")
-	r.HandleFunc("/api/photos/{id}", photoHandler).Methods("GET")
-	r.HandleFunc("/api/photos/{id}/content", photoContentHandler).Methods("GET")
-	r.HandleFunc("/thumbnails/{id}", photoThumbnailHandler).Methods("GET", "HEAD")
-	r.HandleFunc("/api/photos/{id}/comments", photoCommentsHandler).Methods("GET")
-	r.HandleFunc("/api/photos/{id}/tags", photoTagsHandler).Methods("GET")
-	r.HandleFunc("/api/tags", tagsHandler).Methods("GET")
-	r.HandleFunc("/api/tags/{id}/photos", photosByTagHandler).Methods("GET")
-	r.HandleFunc("/api/collections", collectionsHandler).Methods("GET")
-	r.HandleFunc("/api/collections/{id}", collectionHandler).Methods("GET")
-	r.HandleFunc("/api/folders", foldersHandler).Methods("GET")
-	r.HandleFunc("/api/health", healthHandler).Methods("GET")
+	// Public API routes (no auth required)
+	publicAPI := r.PathPrefix("/api").Subrouter()
+	publicAPI.HandleFunc("/auth/login", loginHandler).Methods("POST")
+	publicAPI.HandleFunc("/auth/logout", logoutHandler).Methods("POST")
+	publicAPI.HandleFunc("/auth/google", googleAuthHandler).Methods("GET")
+	publicAPI.HandleFunc("/auth/google/callback", googleAuthCallbackHandler).Methods("GET")
+	publicAPI.HandleFunc("/auth/request-access", requestAccessHandler).Methods("POST")
+	publicAPI.HandleFunc("/auth/change-password", changePasswordHandler).Methods("POST")
+	publicAPI.HandleFunc("/auth/reset-password", passwordResetHandler).Methods("POST")
+	publicAPI.HandleFunc("/health", healthHandler).Methods("GET")
 
-	// Authenticated routes (protected by auth middleware)
-	authRouter := r.PathPrefix("/api").Subrouter()
-	authRouter.Use(authMiddleware)
-	authRouter.HandleFunc("/photos/{id}/comments", addPhotoCommentHandler).Methods("POST")
-	authRouter.HandleFunc("/photos/{id}/tags", addPhotoTagHandler).Methods("POST")
-	authRouter.HandleFunc("/photos/{id}/tags/{tagId}", removePhotoTagHandler).Methods("DELETE")
+	// All other API routes require authentication
+	authAPI := r.PathPrefix("/api").Subrouter()
+	authAPI.Use(authMiddleware)
+	authAPI.HandleFunc("/photos", photosHandler).Methods("GET")
+	authAPI.HandleFunc("/photos/{id}", photoHandler).Methods("GET")
+	authAPI.HandleFunc("/photos/{id}/content", photoContentHandler).Methods("GET")
+	authAPI.HandleFunc("/photos/{id}/comments", photoCommentsHandler).Methods("GET")
+	authAPI.HandleFunc("/photos/{id}/comments", addPhotoCommentHandler).Methods("POST")
+	authAPI.HandleFunc("/photos/{id}/tags", photoTagsHandler).Methods("GET")
+	authAPI.HandleFunc("/photos/{id}/tags", addPhotoTagHandler).Methods("POST")
+	authAPI.HandleFunc("/photos/{id}/tags/{tagId}", removePhotoTagHandler).Methods("DELETE")
+	authAPI.HandleFunc("/tags", tagsHandler).Methods("GET")
+	authAPI.HandleFunc("/tags/{id}/photos", photosByTagHandler).Methods("GET")
+	authAPI.HandleFunc("/collections", collectionsHandler).Methods("GET")
+	authAPI.HandleFunc("/collections/{id}", collectionHandler).Methods("GET")
+	authAPI.HandleFunc("/folders", foldersHandler).Methods("GET")
 
-	// Admin routes (protected by admin middleware)
+	// Admin routes (require admin role)
 	adminRouter := r.PathPrefix("/api/admin").Subrouter()
+	adminRouter.Use(authMiddleware)
 	adminRouter.Use(isAdminMiddleware)
 	adminRouter.HandleFunc("/users", adminUsersHandler).Methods("GET")
 	adminRouter.HandleFunc("/users", adminCreateUserHandler).Methods("POST")
@@ -287,19 +317,24 @@ func main() {
 	adminRouter.HandleFunc("/photos/{id}/description", adminPhotoDescriptionHandler).Methods("POST")
 	adminRouter.HandleFunc("/scan", scanHandler).Methods("POST")
 
-	// Serve React SPA
-	r.HandleFunc("/", spaHandler).Methods("GET")
+	// Public SPA routes (no auth required)
 	r.HandleFunc("/login", spaHandler).Methods("GET")
-	r.HandleFunc("/collections", spaHandler).Methods("GET")
-	r.HandleFunc("/collections/{id}", spaHandler).Methods("GET")
-	r.HandleFunc("/photo/{id}", spaHandler).Methods("GET")
-	r.HandleFunc("/tags", spaHandler).Methods("GET")
-	r.HandleFunc("/tags/{id}", spaHandler).Methods("GET")
-	r.HandleFunc("/account", spaHandler).Methods("GET")
-	r.HandleFunc("/admin", spaHandler).Methods("GET")
 	r.HandleFunc("/reset-password", spaHandler).Methods("GET")
+
+	// Protected SPA routes (require authentication)
+	spaAuth := r.NewRoute().Subrouter()
+	spaAuth.Use(spaAuthMiddleware)
+	spaAuth.HandleFunc("/", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/collections", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/collections/{id}", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/photo/{id}", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/tags", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/tags/{id}", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/account", spaHandler).Methods("GET")
+	spaAuth.HandleFunc("/admin", spaHandler).Methods("GET")
+	spaAuth.PathPrefix("/").HandlerFunc(spaHandler).Methods("GET")
 	
-	// Static assets
+	// Static assets (public)
 	r.PathPrefix("/assets/").HandlerFunc(spaHandler).Methods("GET")
 	r.PathPrefix("/favicon").HandlerFunc(spaHandler).Methods("GET")
 	r.PathPrefix("/index.html").HandlerFunc(spaHandler).Methods("GET")
@@ -364,7 +399,30 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	tokenString, _ := token.SignedString(jwtSecret)
 
+	// Set JWT as httpOnly cookie for SPA page loads
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    tokenString,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "logged out"})
 }
 
 func googleAuthHandler(w http.ResponseWriter, r *http.Request) {
