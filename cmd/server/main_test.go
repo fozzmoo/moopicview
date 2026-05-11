@@ -1082,6 +1082,62 @@ func TestTagsHandler(t *testing.T) {
 	}
 }
 
+// Test tagHandler
+func TestTagHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer cleanupTestDB(db, t)
+
+	// Override getDBURL to use test database
+	originalGetDBURL := getDBURL
+	getDBURL = func() string {
+		dbURL := os.Getenv("TEST_DATABASE_URL")
+		if dbURL == "" {
+			dbURL = "postgres://moopicview:moopicview123@localhost:7432/moopicview_test?sslmode=disable"
+		}
+		return dbURL
+	}
+	defer func() { getDBURL = originalGetDBURL }()
+
+	// Insert test tag
+	var tagID int
+	err := db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Test Tag").Scan(&tagID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Test getting a single tag
+	req := httptest.NewRequest("GET", "/api/tags/"+fmt.Sprint(tagID), nil)
+	w := httptest.NewRecorder()
+
+	// Use mux router to handle route variables
+	r := mux.NewRouter()
+	r.HandleFunc("/api/tags/{id}", tagHandler)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tag map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &tag)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if tag["name"] != "Test Tag" {
+		t.Errorf("Expected tag name 'Test Tag', got %v", tag["name"])
+	}
+
+	// Test getting non-existent tag
+	req2 := httptest.NewRequest("GET", "/api/tags/99999", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent tag, got %d", w2.Code)
+	}
+}
+
 // Test addPhotoTagHandler
 func TestAddPhotoTagHandler(t *testing.T) {
 	db := setupTestDB(t)

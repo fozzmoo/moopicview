@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -320,6 +321,11 @@ func main() {
 	adminRouter.HandleFunc("/photos/{id}/description", adminPhotoDescriptionHandler).Methods("POST")
 	adminRouter.HandleFunc("/scan", scanHandler).Methods("POST")
 
+	// Static assets (public) - must be before spaAuth catch-all
+	r.PathPrefix("/assets/").HandlerFunc(spaHandler).Methods("GET")
+	r.PathPrefix("/favicon").HandlerFunc(spaHandler).Methods("GET")
+	r.PathPrefix("/index.html").HandlerFunc(spaHandler).Methods("GET")
+
 	// Public SPA routes (no auth required)
 	r.HandleFunc("/login", spaHandler).Methods("GET")
 	r.HandleFunc("/reset-password", spaHandler).Methods("GET")
@@ -336,11 +342,6 @@ func main() {
 	spaAuth.HandleFunc("/account", spaHandler).Methods("GET")
 	spaAuth.HandleFunc("/admin", spaHandler).Methods("GET")
 	spaAuth.PathPrefix("/").HandlerFunc(spaHandler).Methods("GET")
-	
-	// Static assets (public)
-	r.PathPrefix("/assets/").HandlerFunc(spaHandler).Methods("GET")
-	r.PathPrefix("/favicon").HandlerFunc(spaHandler).Methods("GET")
-	r.PathPrefix("/index.html").HandlerFunc(spaHandler).Methods("GET")
 
 	log.Printf("Starting MoopicView server on %s", port)
 	go scanPhotos()
@@ -843,6 +844,223 @@ func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "password updated"})
 }
 
+type pendingPhoto struct {
+	filepath     string
+	filename     string
+	collection   string
+	folderID     int
+	photoDate    sql.NullString
+	datePrecision string
+	dateSource   string
+}
+
+func nullStringToInterface(n sql.NullString) interface{} {
+	if n.Valid {
+		return n.String
+	}
+	return nil
+}
+
+func flushPhotoBatch(tx *sql.Tx, batch []pendingPhoto) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	valueStrings := make([]string, 0, len(batch))
+	valueArgs := make([]interface{}, 0, len(batch)*8)
+	for i, p := range batch {
+		valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d, $%d, CURRENT_DATE, $%d, $%d, $%d, $%d)", i*8+1, i*8+2, i*8+3, i*8+4, i*8+5, i*8+6, i*8+7, i*8+8))
+		valueArgs = append(valueArgs, p.filepath, p.filename, p.collection, p.folderID, nullStringToInterface(p.photoDate), p.datePrecision, p.dateSource, "Scanned photo")
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO photos (filepath, filename, collection, folder_id, scan_date, photo_date, date_precision, date_source, description)
+		VALUES %s
+		ON CONFLICT (filepath) DO UPDATE SET
+			filename = EXCLUDED.filename,
+			folder_id = EXCLUDED.folder_id,
+			scan_date = CURRENT_DATE
+	`, strings.Join(valueStrings, ","))
+	_, err := tx.Exec(query, valueArgs...)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func scanRoot(entry string) {
+	parts := strings.SplitN(entry, ":", 2)
+	photoType := "digital"
+	path := ""
+	if len(parts) == 2 {
+		photoType = strings.TrimSpace(parts[0])
+		path = strings.TrimSpace(parts[1])
+	} else {
+		path = strings.TrimSpace(parts[0])
+	}
+
+	// Load existing files from DB: filepath -> scan_date
+	existingFiles := make(map[string]time.Time)
+	rows, err := db.Query("SELECT filepath, scan_date FROM photos WHERE filepath LIKE $1 ESCAPE '/'", path+"%")
+	if err != nil {
+		log.Println("Load existing files error for", path, ":", err)
+	} else {
+		for rows.Next() {
+			var filepath string
+			var scanDate sql.NullTime
+			rows.Scan(&filepath, &scanDate)
+			if scanDate.Valid {
+				existingFiles[filepath] = scanDate.Time
+			}
+		}
+		rows.Close()
+	}
+
+	folderIDCache := make(map[string]int)
+	folderExistsCache := make(map[string]bool)
+
+	// Delete missing files
+	for filepath := range existingFiles {
+		if _, err := os.Stat(filepath); os.IsNotExist(err) {
+			db.Exec("DELETE FROM photos WHERE filepath = $1", filepath)
+			log.Println("Deleted:", filepath)
+			delete(existingFiles, filepath)
+		}
+	}
+
+	const batchSize = 500
+	var batch []pendingPhoto
+
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if err := flushPhotoBatch(tx, batch); err != nil {
+			tx.Rollback()
+			return err
+		}
+		for _, p := range batch {
+			log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s, source=%s)", p.filename, p.collection, p.photoDate.String, p.datePrecision, p.dateSource)
+		}
+		batch = batch[:0]
+		return nil
+	}
+
+	// Add/update files
+	filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		nameLower := strings.ToLower(name)
+		if strings.HasSuffix(nameLower, ".jpg") || strings.HasSuffix(nameLower, ".jpeg") || strings.HasSuffix(nameLower, ".png") {
+
+			// Skip files already in DB
+			if _, ok := existingFiles[fullPath]; ok {
+				return nil
+			}
+
+			// Determine photo date based on type
+			var photoDate sql.NullString
+			var datePrecision string = "unknown"
+			var dateSource string = "unknown"
+
+			if photoType == "digital" {
+				// Primary: EXIF date
+				if date, precision, ok := extractExifDate(fullPath); ok {
+					photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+					datePrecision = precision
+					dateSource = "exif"
+				} else {
+					// Fallback: directory name
+					parentDir := filepath.Base(filepath.Dir(fullPath))
+					if date, precision, source, ok := extractDateFromDirName(parentDir); ok {
+						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+						datePrecision = precision
+						dateSource = source
+					}
+				}
+			} else if photoType == "scanned" {
+				// For scanned photos, try to extract date from filename
+				if date, precision, source, ok := extractDateFromDirName(name); ok {
+					photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
+					datePrecision = precision
+					dateSource = source
+				}
+			}
+
+			// Determine folder path and ID
+			dirPath := filepath.Dir(fullPath)
+			
+			// Check folder ID cache first
+			folderID, cached := folderIDCache[dirPath]
+			if !cached {
+				err = db.QueryRow(`
+					INSERT INTO folders (path, name, parent_path, collection_type)
+					VALUES ($1, $2, $3, $4)
+					ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
+					RETURNING id
+				`, dirPath, filepath.Base(dirPath), filepath.Dir(dirPath), photoType).Scan(&folderID)
+				if err != nil {
+					log.Printf("Error inserting folder %s: %v", dirPath, err)
+					return nil
+				}
+				folderIDCache[dirPath] = folderID
+				folderExistsCache[dirPath] = true
+				
+				// Insert all parent directories recursively (for folder navigation)
+				currentPath := filepath.Dir(dirPath)
+				for {
+					if currentPath == "/" || currentPath == "." || currentPath == path {
+						break
+					}
+					if folderExistsCache[currentPath] {
+						break
+					}
+					parentPath := filepath.Dir(currentPath)
+					
+					_, err = db.Exec(`
+						INSERT INTO folders (path, name, parent_path, collection_type)
+						VALUES ($1, $2, $3, $4)
+						ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
+					`, currentPath, filepath.Base(currentPath), parentPath, photoType)
+					if err != nil {
+						log.Printf("Error inserting parent folder %s: %v", currentPath, err)
+					}
+					folderExistsCache[currentPath] = true
+					
+					currentPath = parentPath
+				}
+			}
+
+			batch = append(batch, pendingPhoto{
+				filepath:      fullPath,
+				filename:      name,
+				collection:    photoType,
+				folderID:      folderID,
+				photoDate:     photoDate,
+				datePrecision: datePrecision,
+				dateSource:    dateSource,
+			})
+
+			if len(batch) >= batchSize {
+				if err := flushBatch(); err != nil {
+					log.Printf("Error flushing batch: %v", err)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Flush remaining photos
+	if err := flushBatch(); err != nil {
+		log.Printf("Error flushing final batch: %v", err)
+	}
+	log.Printf("Scan complete for %s (%s)", path, photoType)
+}
+
 func scanPhotos() {
 
 	rootsStr := os.Getenv("PHOTO_ROOTS")
@@ -859,136 +1077,15 @@ func scanPhotos() {
 	}
 	log.Println("Scanning photos in", rootPaths)
 
-	// Delete missing files
+	var wg sync.WaitGroup
 	for _, entry := range rootPaths {
-		parts := strings.SplitN(entry, ":", 2)
-		path := ""
-		if len(parts) == 2 {
-			path = parts[1]
-		} else {
-			path = parts[0]
-		}
-		path = strings.TrimSpace(path)
-
-		rows, err := db.Query("SELECT id, filepath FROM photos WHERE filepath LIKE $1 ESCAPE '/'", path+"%")
-		if err != nil {
-			log.Println("Delete query error for", path, ":", err)
-			continue
-		}
-		for rows.Next() {
-			var id int
-			var path string
-			rows.Scan(&id, &path)
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				db.Exec("DELETE FROM photos WHERE id = $1", id)
-				log.Println("Deleted:", path)
-			}
-		}
-		rows.Close()
+		wg.Add(1)
+		go func(e string) {
+			defer wg.Done()
+			scanRoot(e)
+		}(entry)
 	}
-
-	// Add/update files
-	for _, entry := range rootPaths {
-		parts := strings.SplitN(entry, ":", 2)
-		photoType := "digital"
-		path := ""
-		if len(parts) == 2 {
-			photoType = strings.TrimSpace(parts[0])
-			path = strings.TrimSpace(parts[1])
-		} else {
-			path = strings.TrimSpace(parts[0])
-		}
-
-		filepath.WalkDir(path, func(fullPath string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			name := d.Name()
-			nameLower := strings.ToLower(name)
-			if strings.HasSuffix(nameLower, ".jpg") || strings.HasSuffix(nameLower, ".jpeg") || strings.HasSuffix(nameLower, ".png") {
-				// Determine photo date based on type
-				var photoDate sql.NullString
-				var datePrecision string = "unknown"
-				var dateSource string = "unknown"
-
-				if photoType == "digital" {
-					// Primary: EXIF date
-					if date, precision, ok := extractExifDate(fullPath); ok {
-						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
-						datePrecision = precision
-						dateSource = "exif"
-					} else {
-						// Fallback: directory name
-						parentDir := filepath.Base(filepath.Dir(fullPath))
-						if date, precision, source, ok := extractDateFromDirName(parentDir); ok {
-							photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
-							datePrecision = precision
-							dateSource = source
-						}
-					}
-				} else if photoType == "scanned" {
-					// For scanned photos, try to extract date from filename
-					if date, precision, source, ok := extractDateFromDirName(name); ok {
-						photoDate = sql.NullString{String: date.Format("2006-01-02"), Valid: true}
-						datePrecision = precision
-						dateSource = source
-					}
-				}
-
-				// Determine folder path and ID
-				dirPath := filepath.Dir(fullPath)
-				
-				// First, ensure the immediate parent folder exists and get its ID
-				var folderID int
-				err = db.QueryRow(`
-					INSERT INTO folders (path, name, parent_path, collection_type)
-					VALUES ($1, $2, $3, $4)
-					ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
-					RETURNING id
-				`, dirPath, filepath.Base(dirPath), filepath.Dir(dirPath), photoType).Scan(&folderID)
-				if err != nil {
-					log.Printf("Error inserting folder %s: %v", dirPath, err)
-					return nil
-				}
-				
-				// Insert all parent directories recursively (for folder navigation)
-				currentPath := filepath.Dir(dirPath)
-				for {
-					if currentPath == "/" || currentPath == "." || currentPath == path {
-						break
-					}
-					parentPath := filepath.Dir(currentPath)
-					
-					// Insert parent folder (ignore return value)
-					_, err = db.Exec(`
-						INSERT INTO folders (path, name, parent_path, collection_type)
-						VALUES ($1, $2, $3, $4)
-						ON CONFLICT (path) DO UPDATE SET name = EXCLUDED.name
-					`, currentPath, filepath.Base(currentPath), parentPath, photoType)
-					if err != nil {
-						log.Printf("Error inserting parent folder %s: %v", currentPath, err)
-					}
-					
-					currentPath = parentPath
-				}
-
-				_, err = db.Exec(`
-					INSERT INTO photos (filepath, filename, collection, folder_id, scan_date, photo_date, date_precision, date_source, description)
-					VALUES ($1, $2, $3, $4, CURRENT_DATE, $5, $6, $7, $8)
-					ON CONFLICT (filepath) DO UPDATE SET
-						filename = EXCLUDED.filename,
-						folder_id = EXCLUDED.folder_id,
-						scan_date = CURRENT_DATE
-				`, fullPath, name, photoType, folderID, photoDate, datePrecision, dateSource, "Scanned photo")
-				if err == nil {
-					log.Printf("Added/Updated: %s (type=%s, date=%v, precision=%s, source=%s)", name, photoType, photoDate.String, datePrecision, dateSource)
-				} else {
-					log.Printf("Error inserting %s: %v", fullPath, err)
-				}
-			}
-			return nil
-		})
-	}
+	wg.Wait()
 	log.Println("Scan complete.")
 }
 
