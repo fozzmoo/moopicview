@@ -23,7 +23,7 @@ See [DESIGN.md](DESIGN.md) for detailed architecture, data model, API design, ne
 1. Clone repo and copy `.env.example` to `.env`
 2. `podman-compose -f docker-compose.local.yml up -d`
 3. Access via http://localhost:8787
-4. Login with `admin@fozzilinymoo.org` / `admin123`
+4. Check the database for initial admin credentials or run the admin CLI tool
 
 ### Option 2: Manual Podman
 1. Clone repo and copy `.env.example` to `.env`
@@ -48,7 +48,7 @@ See [DESIGN.md](DESIGN.md) for detailed architecture, data model, API design, ne
      -v /drv/origVideo/mooview/scanned:/opt/mooview/scanned:ro \
      --restart unless-stopped moopicview-local
    ```
-4. Login with `admin@fozzilinymoo.org` / `admin123`
+4. Check the database for initial admin credentials or run the admin CLI tool
 
 ## Production Deployment
 
