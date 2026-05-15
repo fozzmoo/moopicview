@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: moopicview_db
+    environment:
+      POSTGRES_DB: moopicview
+      POSTGRES_USER: moopicview
+      POSTGRES_PASSWORD: moopicview123
+    volumes:
+      - moopicview_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "7432:5432"
+    networks:
+      - moopicview_net
+
+  app:
+    image: localhost/moopicview-local:latest
+    container_name: moopicview
+    environment:
+      DATABASE_URL: postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable
+      CLI_DATABASE_URL: postgres://moopicview:moopicview123@localhost:7432/moopicview?sslmode=disable
+      JWT_SECRET: change-this-to-a-long-random-secret-32-chars-min
+      GOOGLE_CLIENT_ID: your-google-oauth-client-id
+      GOOGLE_CLIENT_SECRET: your-google-oauth-client-secret
+      SMTP_HOST: ion.fozzilinymoo.org
+      SMTP_PORT: 465
+      SMTP_USER: mooview@fozzilinymoo.org
+      SMTP_PASS: your-smtp-password
+      PHOTO_ROOTS: digital:/opt/mooview/digital,scanned:/opt/mooview/scanned
+      LISTEN_ADDR: :8080
+      ADMIN_EMAIL: admin@moopicview.local
+      FRONTEND_DIST: /root/frontend/dist
+      THUMBNAIL_CACHE_DIR: /mooview_cache
+    ports:
+      - "8787:8080"
+    volumes:
+      - /path/to/cache:/mooview_cache
+      - /path/to/digital:/opt/mooview/digital:ro
+      - /path/to/scanned:/opt/mooview/scanned:ro
+    depends_on:
+      - db
+    networks:
+      - moopicview_net
+    restart: unless-stopped
+
+networks:
+  moopicview_net:
+    driver: bridge
+
+volumes:
+  moopicview_postgres_data:
+    external: true

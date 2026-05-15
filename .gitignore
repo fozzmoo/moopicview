@@ -24,5 +24,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Docker compose files
-docker-compose*.yml
+# Docker compose files (but allow sample)
+docker-compose.yml
+docker-compose.local.yml
