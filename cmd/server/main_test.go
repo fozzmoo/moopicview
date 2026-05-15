@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1041,8 +1042,13 @@ func TestPhotoTagsHandler(t *testing.T) {
 
 // Test tagsHandler
 func TestTagsHandler(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(db, t)
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
 
 	// Override getDBURL to use test database
 	originalGetDBURL := getDBURL
@@ -1056,9 +1062,40 @@ func TestTagsHandler(t *testing.T) {
 	defer func() { getDBURL = originalGetDBURL }()
 
 	// Insert test tags
-	_, err := db.Exec("INSERT INTO tags (name) VALUES ($1), ($2)", "Tag 1", "Tag 2")
+	_, err := testDB.Exec("INSERT INTO tags (name) VALUES ($1), ($2)", "Tag 1", "Tag 2")
 	if err != nil {
 		t.Fatalf("Failed to insert test tags: %v", err)
+	}
+
+	// Get the tag IDs for linking photos
+	var tag1ID, tag2ID int
+	err = testDB.QueryRow("SELECT id FROM tags WHERE name = $1", "Tag 1").Scan(&tag1ID)
+	if err != nil {
+		t.Fatalf("Failed to get tag1 ID: %v", err)
+	}
+	err = testDB.QueryRow("SELECT id FROM tags WHERE name = $1", "Tag 2").Scan(&tag2ID)
+	if err != nil {
+		t.Fatalf("Failed to get tag2 ID: %v", err)
+	}
+
+	// Insert a test photo and link it to Tag 1 only
+	_, err = testDB.Exec(`
+		INSERT INTO photos (filepath, filename, collection, folder_id) 
+		VALUES ('/tmp/test/photo1.jpg', 'photo1.jpg', 'digital', 1)
+		ON CONFLICT (filepath) DO NOTHING
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+	var photoID int
+	err = testDB.QueryRow("SELECT id FROM photos WHERE filepath = '/tmp/test/photo1.jpg'").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to get photo ID: %v", err)
+	}
+
+	_, err = testDB.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tag1ID)
+	if err != nil {
+		t.Fatalf("Failed to link photo to tag: %v", err)
 	}
 
 	// Test getting all tags
@@ -1077,15 +1114,31 @@ func TestTagsHandler(t *testing.T) {
 		t.Fatalf("Failed to parse response: %v", err)
 	}
 
-	if len(tags) < 2 {
-		t.Errorf("Expected at least 2 tags, got %d", len(tags))
+	// Only Tag 1 has a photo, so it should be returned. Tag 2 has 0 photos and should be filtered out.
+	if len(tags) != 1 {
+		t.Errorf("Expected 1 tag (only tags with images), got %d", len(tags))
+	}
+
+	// Verify photo_count is present
+	if len(tags) > 0 {
+		if tags[0]["name"] != "Tag 1" {
+			t.Errorf("Expected tag name 'Tag 1', got %v", tags[0]["name"])
+		}
+		if tags[0]["photo_count"].(float64) != 1 {
+			t.Errorf("Expected photo_count 1, got %v", tags[0]["photo_count"])
+		}
 	}
 }
 
 // Test tagHandler
 func TestTagHandler(t *testing.T) {
-	db := setupTestDB(t)
-	defer cleanupTestDB(db, t)
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
 
 	// Override getDBURL to use test database
 	originalGetDBURL := getDBURL
@@ -1100,9 +1153,29 @@ func TestTagHandler(t *testing.T) {
 
 	// Insert test tag
 	var tagID int
-	err := db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Test Tag").Scan(&tagID)
+	err := testDB.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Test Tag").Scan(&tagID)
 	if err != nil {
 		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Insert a test photo and link it to the tag
+	_, err = testDB.Exec(`
+		INSERT INTO photos (filepath, filename, collection, folder_id) 
+		VALUES ('/tmp/test/photo1.jpg', 'photo1.jpg', 'digital', 1)
+		ON CONFLICT (filepath) DO NOTHING
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+	var photoID int
+	err = testDB.QueryRow("SELECT id FROM photos WHERE filepath = '/tmp/test/photo1.jpg'").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to get photo ID: %v", err)
+	}
+
+	_, err = testDB.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tagID)
+	if err != nil {
+		t.Fatalf("Failed to link photo to tag: %v", err)
 	}
 
 	// Test getting a single tag
@@ -1126,6 +1199,11 @@ func TestTagHandler(t *testing.T) {
 
 	if tag["name"] != "Test Tag" {
 		t.Errorf("Expected tag name 'Test Tag', got %v", tag["name"])
+	}
+
+	// Verify photo_count is returned
+	if tag["photo_count"].(float64) != 1 {
+		t.Errorf("Expected photo_count 1, got %v", tag["photo_count"])
 	}
 
 	// Test getting non-existent tag
@@ -1302,5 +1380,198 @@ func TestRemovePhotoTagHandler(t *testing.T) {
 	}
 	if tagCount != 0 {
 		t.Errorf("Expected 0 tags on photo after removal, got %d", tagCount)
+	}
+}
+
+// Test adminListTagsHandler
+func TestAdminListTagsHandler(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
+
+	// Insert test tags
+	_, err := testDB.Exec("INSERT INTO tags (name) VALUES ($1), ($2)", "Admin Tag 1", "Admin Tag 2")
+	if err != nil {
+		t.Fatalf("Failed to insert test tags: %v", err)
+	}
+
+	// Test getting all tags
+	req := httptest.NewRequest("GET", "/api/admin/tags", nil)
+	w := httptest.NewRecorder()
+
+	adminListTagsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tags []map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &tags)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(tags) != 2 {
+		t.Errorf("Expected 2 tags, got %d", len(tags))
+	}
+
+	// Verify photo_count is included
+	if len(tags) > 0 {
+		if tags[0]["photo_count"].(float64) != 0 {
+			t.Errorf("Expected photo_count 0 for tag with no photos, got %v", tags[0]["photo_count"])
+		}
+	}
+}
+
+// Test adminCreateTagHandler
+func TestAdminCreateTagHandler(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
+
+	// Test creating a new tag
+	reqBody := `{"name": "New Admin Tag"}`
+	req := httptest.NewRequest("POST", "/api/admin/tags", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	adminCreateTagHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("Expected status 201, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tag map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &tag)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if tag["name"] != "New Admin Tag" {
+		t.Errorf("Expected tag name 'New Admin Tag', got %v", tag["name"])
+	}
+
+	// Test creating duplicate tag
+	req2 := httptest.NewRequest("POST", "/api/admin/tags", strings.NewReader(reqBody))
+	w2 := httptest.NewRecorder()
+
+	adminCreateTagHandler(w2, req2)
+
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for duplicate tag, got %d. Body: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// Test adminUpdateTagHandler
+func TestAdminUpdateTagHandler(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
+
+	// Insert a test tag
+	var tagID int
+	err := testDB.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Old Tag Name").Scan(&tagID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Test updating the tag
+	reqBody := `{"name": "Updated Tag Name"}`
+	req := httptest.NewRequest("PUT", "/api/admin/tags/"+fmt.Sprint(tagID), strings.NewReader(reqBody))
+	vars := map[string]string{"id": fmt.Sprint(tagID)}
+	req = mux.SetURLVars(req, vars)
+	w := httptest.NewRecorder()
+
+	adminUpdateTagHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var tag map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &tag)
+	if err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if tag["name"] != "Updated Tag Name" {
+		t.Errorf("Expected tag name 'Updated Tag Name', got %v", tag["name"])
+	}
+}
+
+// Test adminDeleteTagHandler
+func TestAdminDeleteTagHandler(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer cleanupTestDB(testDB, t)
+
+	// Set global db for handler access
+	origDB := db
+	db = testDB
+	defer func() { db = origDB }()
+
+	// Insert a test tag
+	var tagID int
+	err := testDB.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", "Tag To Delete").Scan(&tagID)
+	if err != nil {
+		t.Fatalf("Failed to insert test tag: %v", err)
+	}
+
+	// Insert a photo and link it to the tag
+	_, err = testDB.Exec("INSERT INTO photos (filepath, filename, collection) VALUES ($1, $2, $3)", 
+		"/tmp/test/photo.jpg", "photo.jpg", "digital")
+	if err != nil {
+		t.Fatalf("Failed to insert test photo: %v", err)
+	}
+	var photoID int
+	err = testDB.QueryRow("SELECT id FROM photos WHERE filepath = '/tmp/test/photo.jpg'").Scan(&photoID)
+	if err != nil {
+		t.Fatalf("Failed to get photo ID: %v", err)
+	}
+
+	_, err = testDB.Exec("INSERT INTO photo_tags (photo_id, tag_id) VALUES ($1, $2)", photoID, tagID)
+	if err != nil {
+		t.Fatalf("Failed to link photo to tag: %v", err)
+	}
+
+	// Test deleting the tag
+	req := httptest.NewRequest("DELETE", "/api/admin/tags/"+fmt.Sprint(tagID), nil)
+	vars := map[string]string{"id": fmt.Sprint(tagID)}
+	req = mux.SetURLVars(req, vars)
+	w := httptest.NewRecorder()
+
+	adminDeleteTagHandler(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Expected status 204, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify tag was deleted
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM tags WHERE id = $1)", tagID).Scan(&exists)
+	if err != nil {
+		t.Fatalf("Failed to check if tag exists: %v", err)
+	}
+	if exists {
+		t.Errorf("Tag should have been deleted but still exists")
+	}
+
+	// Verify photo tag association was also deleted
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM photo_tags WHERE tag_id = $1)", tagID).Scan(&exists)
+	if err != nil {
+		t.Fatalf("Failed to check photo tag association: %v", err)
+	}
+	if exists {
+		t.Errorf("Photo tag association should have been deleted but still exists")
 	}
 }

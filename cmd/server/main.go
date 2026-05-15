@@ -29,10 +29,10 @@ import (
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/robfig/cron/v3"
 	"github.com/rwcarlsen/goexif/exif"
-	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	_ "github.com/lib/pq"
 )
 
 var cliMode = false
@@ -1506,8 +1506,8 @@ func photoHandler(w http.ResponseWriter, r *http.Request) {
    		Description    string   `json:"description"`
    		Collection     string   `json:"collection"`
    		PhotoDate      *string  `json:"photo_date"`
-   		DatePrecision  string   `json:"date_precision"`
-   		DateSource     string   `json:"date_source"`
+   		DatePrecision  *string  `json:"date_precision"`
+   		DateSource     *string  `json:"date_source"`
    		ContentURL     string   `json:"content_url"`
    		PrevPhotoID    *int     `json:"prev_photo_id"`
    		NextPhotoID    *int     `json:"next_photo_id"`
@@ -1949,8 +1949,8 @@ func photosByTagHandler(w http.ResponseWriter, r *http.Request) {
 			Collection    string    `json:"collection"`
 			FolderID      *int      `json:"folder_id"`
 			PhotoDate     *string   `json:"photo_date"`
-			DatePrecision string    `json:"date_precision"`
-			DateSource    string    `json:"date_source"`
+			DatePrecision *string   `json:"date_precision"`
+			DateSource    *string   `json:"date_source"`
 			Description   string    `json:"description"`
 			PosX          float64   `json:"posX"`
 			PosY          float64   `json:"posY"`
@@ -2319,15 +2319,16 @@ func collectionHandler(w http.ResponseWriter, r *http.Request) {
 	photos := make([]map[string]interface{}, 0)
 	for photoRows.Next() {
 		var photoID int
-		var filepath, filename, collection, photoDate, datePrecision string
+		var filepath, filename, collection string
+		var photoDate, datePrecision sql.NullString
 		var tagCount int
 		photoRows.Scan(&photoID, &filepath, &filename, &collection, &photoDate, &datePrecision, &tagCount)
 		photos = append(photos, map[string]interface{}{
 			"id":             photoID,
 			"filename":       filename,
 			"collection":     collection,
-			"photo_date":     photoDate,
-			"date_precision": datePrecision,
+			"photo_date":     photoDate.String,
+			"date_precision": datePrecision.String,
 			"tag_count":      tagCount,
 			"url":            fmt.Sprintf("/api/photos/%d/content", photoID),
 		})
