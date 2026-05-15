@@ -23,3 +23,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Docker compose files
+docker-compose*.yml
