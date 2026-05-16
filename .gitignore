@@ -1,10 +1,18 @@
 # Environment variables
 .env
 
+# Cookies (sensitive)
+cookies.txt
+
 # Build artifacts
 moopicview
 cmd/server/moopicview
+moopicview-server
 server
+bin/server
+admin-cli
+admin-cli-static
+*.tar
 frontend/dist/
 
 # Dependencies
