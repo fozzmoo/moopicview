@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Link } from 'react-router-dom';
+import { Settings, ExternalLink } from 'lucide-react';
 
 export default function AdminDashboard() {
   const [users, setUsers] = useState<any[]>([]);
@@ -249,12 +251,12 @@ export default function AdminDashboard() {
           <CardContent>
             <div className="space-y-4">
               {users.map(user => (
-                <div key={user.id} className="flex items-center justify-between p-4 border rounded-lg">
-                  <div>
+                <div key={user.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 p-4 border rounded-lg">
+                  <div className="flex-1 min-w-0">
                     <p className="font-medium">{user.name} ({user.email})</p>
                     <p className="text-sm text-muted-foreground">Role: {user.role}</p>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2">
                       <Checkbox
                         id={`admin-${user.id}`}
@@ -268,7 +270,7 @@ export default function AdminDashboard() {
                         Admin
                       </label>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button variant="outline" size="sm" onClick={() => openPasswordDialog(user.id)}>
                         Change Password
                       </Button>
@@ -384,6 +386,28 @@ export default function AdminDashboard() {
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Tags Section */}
+        <Card className="mb-6">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Tags</CardTitle>
+              <CardDescription>Manage photo tags - create, edit, or delete tags</CardDescription>
+            </div>
+            <Link to="/admin/tags">
+              <Button>
+                <Settings className="h-4 w-4 mr-2" />
+                Manage Tags
+                <ExternalLink className="h-4 w-4 ml-2" />
+              </Button>
+            </Link>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground text-sm">
+              Tags allow you to categorize and mark photos with labels like "Family", "Vacation", etc.
+            </p>
           </CardContent>
         </Card>
 

@@ -49,6 +49,11 @@
 
 * {
   border-color: hsl(var(--color-border));
+  box-sizing: border-box;
+}
+
+html {
+  overflow-x: hidden;
 }
 
 body {

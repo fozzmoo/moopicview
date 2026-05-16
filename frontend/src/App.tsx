@@ -7,6 +7,7 @@ import PhotoView from './pages/PhotoView';
 import TagsView from './pages/TagsView';
 import TagPhotosView from './pages/TagPhotosView';
 import AdminDashboard from './pages/AdminDashboard';
+import AdminTags from './pages/AdminTags';
 import Account from './pages/Account';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { PathProvider } from './context/PathContext';
@@ -58,6 +59,11 @@ function App() {
                 <Route path="/admin" element={
                   <ProtectedRoute>
                     <AdminDashboard />
+                  </ProtectedRoute>
+                } />
+                <Route path="/admin/tags" element={
+                  <ProtectedRoute>
+                    <AdminTags />
                   </ProtectedRoute>
                 } />
                 <Route path="/account" element={

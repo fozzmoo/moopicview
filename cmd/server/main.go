@@ -293,13 +293,15 @@ func main() {
 	authAPI.HandleFunc("/photos/{id}/tags", photoTagsHandler).Methods("GET")
 	authAPI.HandleFunc("/photos/{id}/tags", addPhotoTagHandler).Methods("POST")
 	authAPI.HandleFunc("/photos/{id}/tags/{tagId}", removePhotoTagHandler).Methods("DELETE")
+
 	authAPI.HandleFunc("/tags", tagsHandler).Methods("GET")
+	authAPI.HandleFunc("/tags/{id}", tagHandler).Methods("GET")
 	authAPI.HandleFunc("/tags/{id}/photos", photosByTagHandler).Methods("GET")
 	authAPI.HandleFunc("/collections", collectionsHandler).Methods("GET")
 	authAPI.HandleFunc("/collections/{id}", collectionHandler).Methods("GET")
 	authAPI.HandleFunc("/folders", foldersHandler).Methods("GET")
 
-	// Thumbnail route (outside /api prefix, but still requires auth)
+	// Thumbnail route (requires auth like all image content)
 	r.Handle("/thumbnails/{id}", authMiddleware(http.HandlerFunc(photoThumbnailHandler))).Methods("GET", "HEAD")
 
 	// Admin routes (require admin role)
@@ -319,6 +321,10 @@ func main() {
 	adminRouter.HandleFunc("/proposed-edits/{id}/review", adminProposedEditReviewHandler).Methods("POST")
 	adminRouter.HandleFunc("/photos/{id}/date", adminPhotoDateHandler).Methods("POST")
 	adminRouter.HandleFunc("/photos/{id}/description", adminPhotoDescriptionHandler).Methods("POST")
+	adminRouter.HandleFunc("/tags", adminListTagsHandler).Methods("GET")
+	adminRouter.HandleFunc("/tags", adminCreateTagHandler).Methods("POST")
+	adminRouter.HandleFunc("/tags/{id}", adminUpdateTagHandler).Methods("PUT")
+	adminRouter.HandleFunc("/tags/{id}", adminDeleteTagHandler).Methods("DELETE")
 	adminRouter.HandleFunc("/scan", scanHandler).Methods("POST")
 
 	// Static assets (public) - must be before spaAuth catch-all
@@ -1879,10 +1885,17 @@ func photoTagsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tags)
 }
 
-// tagsHandler returns all available tags (for autocomplete)
+// tagsHandler returns all available tags (for autocomplete) with photo counts, filtered to tags that have photos
 func tagsHandler(w http.ResponseWriter, r *http.Request) {
 
-	rows, err := db.Query("SELECT id, name FROM tags ORDER BY name ASC")
+	rows, err := db.Query(`
+		SELECT t.id, t.name, COUNT(pt.photo_id) as photo_count
+		FROM tags t
+		JOIN photo_tags pt ON t.id = pt.tag_id
+		GROUP BY t.id, t.name
+		HAVING COUNT(pt.photo_id) > 0
+		ORDER BY t.name ASC
+	`)
 	if err != nil {
 		http.Error(w, "Failed to fetch tags", http.StatusInternalServerError)
 		return
@@ -1892,21 +1905,196 @@ func tagsHandler(w http.ResponseWriter, r *http.Request) {
 	tags := []map[string]interface{}{}
 	for rows.Next() {
 		var tag struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			PhotoCount int    `json:"photo_count"`
 		}
-		err := rows.Scan(&tag.ID, &tag.Name)
+		err := rows.Scan(&tag.ID, &tag.Name, &tag.PhotoCount)
 		if err != nil {
 			continue
 		}
 		tags = append(tags, map[string]interface{}{
-			"id":   tag.ID,
-			"name": tag.Name,
+			"id":         tag.ID,
+			"name":       tag.Name,
+			"photo_count": tag.PhotoCount,
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(tags)
+}
+
+// tagHandler returns a single tag by ID with photo count
+func tagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	var tag struct {
+		ID         int    `json:"id"`
+		Name       string `json:"name"`
+		PhotoCount int    `json:"photo_count"`
+	}
+
+	err := db.QueryRow("SELECT name FROM tags WHERE id = $1", id).Scan(&tag.Name)
+	if err != nil {
+		http.Error(w, "Tag not found", http.StatusNotFound)
+		return
+	}
+	tag.ID = id
+
+	err = db.QueryRow("SELECT COUNT(*) FROM photo_tags WHERE tag_id = $1", id).Scan(&tag.PhotoCount)
+	if err != nil {
+		tag.PhotoCount = 0
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tag)
+}
+
+// adminListTagsHandler returns all tags with photo counts for admin management
+func adminListTagsHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`
+		SELECT t.id, t.name, COUNT(pt.photo_id) as photo_count
+		FROM tags t
+		LEFT JOIN photo_tags pt ON t.id = pt.tag_id
+		GROUP BY t.id, t.name
+		ORDER BY t.name ASC
+	`)
+	if err != nil {
+		http.Error(w, "Failed to fetch tags", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tags := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var tag struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			PhotoCount int    `json:"photo_count"`
+		}
+		err := rows.Scan(&tag.ID, &tag.Name, &tag.PhotoCount)
+		if err != nil {
+			continue
+		}
+		tags = append(tags, map[string]interface{}{
+			"id":         tag.ID,
+			"name":       tag.Name,
+			"photo_count": tag.PhotoCount,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tags)
+}
+
+// adminCreateTagHandler creates a new tag
+func adminCreateTagHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "Tag name is required", http.StatusBadRequest)
+		return
+	}
+
+	var tagID int
+	err := db.QueryRow("INSERT INTO tags (name) VALUES ($1) RETURNING id", name).Scan(&tagID)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key value") {
+			http.Error(w, "Tag with this name already exists", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "Failed to create tag", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":   tagID,
+		"name": name,
+	})
+}
+
+// adminUpdateTagHandler updates a tag's name
+func adminUpdateTagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "Tag name is required", http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec("UPDATE tags SET name = $1 WHERE id = $2", name, id)
+	if err != nil {
+		http.Error(w, "Failed to update tag", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":   id,
+		"name": name,
+	})
+}
+
+// adminDeleteTagHandler deletes a tag and its photo associations
+func adminDeleteTagHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, _ := strconv.Atoi(idStr)
+
+	// Check if tag exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM tags WHERE id = $1)", id).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Tag not found", http.StatusNotFound)
+		return
+	}
+
+	// Count photo associations before deleting
+	var photoCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM photo_tags WHERE tag_id = $1", id).Scan(&photoCount)
+	if err != nil {
+		photoCount = 0
+	}
+
+	// Delete photo associations first
+	_, err = db.Exec("DELETE FROM photo_tags WHERE tag_id = $1", id)
+	if err != nil {
+		http.Error(w, "Failed to delete tag associations", http.StatusInternalServerError)
+		return
+	}
+
+	// Delete the tag
+	_, err = db.Exec("DELETE FROM tags WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, "Failed to delete tag", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Admin deleted tag %d (had %d photo associations)", id, photoCount)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // photosByTagHandler returns all photos for a specific tag

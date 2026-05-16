@@ -82,35 +82,14 @@ export default function PhotoView() {
 
   const handleCopyToClipboard = async () => {
     try {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = photo.content_url;
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Image load timeout')), 3000);
-        img.onload = () => { clearTimeout(timeout); resolve(); };
-        img.onerror = () => { clearTimeout(timeout); reject(new Error('Image load failed')); };
-      });
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(img, 0, 0);
-      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
-      await navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob })
-      ]);
+      const response = await fetch(photo.content_url);
+      const blob = await response.blob();
+      const type = blob.type || 'image/jpeg';
+      const item = new ClipboardItem({ [type]: blob });
+      await navigator.clipboard.write([item]);
     } catch (error) {
-      // Fallback: try fetch-based approach
-      try {
-        const response = await fetch(photo.content_url);
-        const blob = await response.blob();
-        const type = blob.type || 'image/jpeg';
-        const item = new ClipboardItem({ [type]: blob });
-        await navigator.clipboard.write([item]);
-      } catch (fallbackError) {
-        console.error('Copy failed:', error);
-        alert('Failed to copy image to clipboard');
-      }
+      console.error('Copy failed:', error);
+      alert('Failed to copy image to clipboard');
     }
   };
 
@@ -476,10 +455,10 @@ export default function PhotoView() {
   if (!photo) return <div className="min-h-screen bg-background flex items-center justify-center">Photo not found</div>;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex flex-col h-dvh md:h-auto bg-background">
       <Navbar />
       <div className="container mx-auto px-4 py-6">
-        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
+        <nav className="flex items-center gap-2 text-sm text-muted-foreground px-4 py-3 md:py-0 md:px-0 md:mb-6">
           {breadcrumbs.map((crumb, index) => (
             <span key={crumb.id || index}>
               {index > 0 && <span className="text-muted-foreground/50">/</span>}
@@ -503,8 +482,8 @@ export default function PhotoView() {
           )}
         </nav>
 
-        <div className="flex items-start gap-4 lg:gap-8">
-          <div className="flex-1 flex flex-col gap-6">
+          <div className="flex-1 flex flex-col md:flex-row md:items-start md:gap-4 lg:gap-8 min-h-0">
+            <div className="flex-1 flex flex-col gap-6 md:flex-row md:gap-4 lg:gap-8 min-h-0">
               <div className="flex-1">
                 {isFullscreen ? (
                   <div 

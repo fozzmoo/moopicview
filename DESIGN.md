@@ -347,6 +347,10 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - `GET /api/admin/proposed-edits` - Requires admin role
 - `POST /api/admin/proposed-edits/:id/review` - Requires admin role
 - `POST /api/admin/photos/:id/date` - Edit photo date (photo_date, date_precision) - Requires admin role
+- `GET /api/admin/tags` - List all tags with photo counts - Requires admin role
+- `POST /api/admin/tags` - Create a new tag (name) - Requires admin role
+- `PUT /api/admin/tags/:id` - Update tag name - Requires admin role
+- `DELETE /api/admin/tags/:id` - Delete a tag and its photo associations - Requires admin role
 
 **Protected static routes** for built React app.
 
@@ -363,10 +367,14 @@ PHOTO_ROOTS=digital:/unas/images/digital_photos,scanned:/unas/images/scanned_pho
 - ✅ `POST /api/photos/:id/comments` - Add comment to a photo (requires auth)
 - ✅ `GET /api/photos/:id/tags` - Get tags for a photo
 - ✅ `GET /api/tags` - Get all available tags
-- ✅ `GET /api/tags/:id` - Get a single tag by ID
+- ✅ `GET /api/tags/:id` - Get a single tag by ID (with photo count)
 - ✅ `GET /api/tags/:id/photos` - Get photos for a specific tag
-- ✅ `POST /api/photos/:id/tags` - Add tag to a photo (requires auth)
+- ✅ `POST /api/photos/:id/tags` - Add tag to photo (requires auth)
 - ✅ `DELETE /api/photos/:id/tags/:tagId` - Remove tag from photo (requires auth)
+- ✅ `GET /api/admin/tags` - List all tags with photo counts (admin only)
+- ✅ `POST /api/admin/tags` - Create new tag (admin only)
+- ✅ `PUT /api/admin/tags/:id` - Update tag name (admin only)
+- ✅ `DELETE /api/admin/tags/:id` - Delete tag and associations (admin only)
 - ✅ `POST /api/admin/scan` - Trigger photo scan (admin only, runs in background)
 - ✅ `GET /api/admin/users` - List all users (requires admin role)
 - ✅ `POST /api/admin/users` - Create new user account (requires admin role)
@@ -634,6 +642,9 @@ The backend serves the React SPA for all non-API routes:
 - `GET /photo/{id}` - Photo detail page
 - `GET /account` - User account page
 - `GET /admin` - Admin dashboard
+- `GET /admin/tags` - Tag administration (create, edit, delete tags)
+- `GET /tags` - Tag browse/search page
+- `GET /tags/{id}` - Photos for a specific tag
 - `GET /reset-password` - Password reset page
 
 ## 14. Future Enhancements (Not in MVP)

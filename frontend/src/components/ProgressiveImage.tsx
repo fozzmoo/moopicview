@@ -80,3 +80,5 @@ export default function ProgressiveImage({ src, thumbnail, alt = '', className =
     </div>
   );
 }
+
+
