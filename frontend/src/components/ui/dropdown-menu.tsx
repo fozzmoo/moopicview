@@ -45,9 +45,10 @@ const DropdownMenuSubContent = React.forwardRef<
   <DropdownMenuPrimitive.SubContent
     ref={ref}
     className={cn(
-      "z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg",
+      "z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 shadow-lg",
       className
     )}
+    style={{ backgroundColor: 'hsl(var(--color-popover))', color: 'hsl(var(--color-popover-foreground))' }}
     {...props}
   />
 ))
@@ -63,9 +64,10 @@ const DropdownMenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md",
+        "z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 shadow-md",
         className
       )}
+      style={{ backgroundColor: 'hsl(var(--color-popover))', color: 'hsl(var(--color-popover-foreground))' }}
       {...props}
     />
   </DropdownMenuPrimitive.Portal>

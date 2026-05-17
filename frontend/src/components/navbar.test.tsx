@@ -59,4 +59,126 @@ describe('Navbar', () => {
 
     expect(screen.getByRole('button', { name: /toggle theme/i })).toBeInTheDocument()
   })
+
+  it('opens mobile menu when hamburger button is clicked', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    expect(mobileMenu).toBeInTheDocument()
+  })
+
+  it('mobile dropdown menu has opaque background without backdrop-blur', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    const style = mobileMenu.getAttribute('style')
+    expect(style).toContain('background-color')
+    expect(style).toContain('hsl(var(--color-background))')
+    expect(mobileMenu.className).not.toContain('/95')
+    expect(mobileMenu.className).not.toContain('/60')
+    expect(mobileMenu.className).not.toContain('backdrop-blur')
+  })
+
+  it('mobile dropdown menu has shadow for visual separation', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    expect(mobileMenu.className).toContain('shadow-lg')
+  })
+
+  it('mobile dropdown menu closes when a link is clicked', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    expect(mobileMenu).toBeInTheDocument()
+
+    const collectionsLink = screen.getByTestId('mobile-collections-link')
+    fireEvent.click(collectionsLink)
+
+    expect(screen.queryByTestId('mobile-dropdown-menu')).not.toBeInTheDocument()
+  })
+
+  it('mobile dropdown menu has solid border-bottom for contrast', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    expect(mobileMenu.className).toContain('border-b')
+  })
+
+  it('navbar does not use backdrop-blur which causes transparency on mobile', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const nav = screen.getByRole('navigation')
+    expect(nav.className).not.toContain('backdrop-blur')
+  })
+
+  it('mobile dropdown menu is right-aligned under the hamburger icon', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    const classes = mobileMenu.className
+    expect(classes).toContain('right-0')
+    expect(classes).not.toContain('left-0')
+  })
+
+  it('mobile dropdown menu items are right-justified', () => {
+    render(
+      <BrowserRouter>
+        <Navbar />
+      </BrowserRouter>
+    )
+
+    const hamburgerButton = screen.getByRole('button', { name: /menu/i })
+    fireEvent.click(hamburgerButton)
+
+    const mobileMenu = screen.getByTestId('mobile-dropdown-menu')
+    const innerDiv = mobileMenu.querySelector('.flex')
+    expect(innerDiv?.className).toContain('text-right')
+  })
 })
