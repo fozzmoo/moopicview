@@ -1575,3 +1575,107 @@ func TestAdminDeleteTagHandler(t *testing.T) {
 		t.Errorf("Photo tag association should have been deleted but still exists")
 	}
 }
+
+func TestLoggingMiddleware(t *testing.T) {
+	tests := []struct {
+		name           string
+		logLevel       string
+		method         string
+		path           string
+		handlerCode    int
+		expectedStatus int
+	}{
+		{
+			name:           "info level - 200 response",
+			logLevel:       "info",
+			method:         "GET",
+			path:           "/api/photos",
+			handlerCode:    http.StatusOK,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "debug level - 404 response",
+			logLevel:       "debug",
+			method:         "GET",
+			path:           "/api/nonexistent",
+			handlerCode:    http.StatusNotFound,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "default level when unset",
+			logLevel:       "",
+			method:         "POST",
+			path:           "/api/auth/login",
+			handlerCode:    http.StatusOK,
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origLogLevel := logLevel
+			logLevel = tt.logLevel
+			defer func() { logLevel = origLogLevel }()
+
+			wrappedHandler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.handlerCode)
+			}))
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			wrappedHandler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rec.Code)
+			}
+		})
+	}
+}
+
+func TestLoggingMiddlewareSkipsHealth(t *testing.T) {
+	logLevel = "info"
+	origLogLevel := logLevel
+	defer func() { logLevel = origLogLevel }()
+
+	healthCalled := false
+	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/health", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if !healthCalled {
+		t.Error("Health handler should still be called even though logging is skipped")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestLoggingMiddlewareCapturesStatus(t *testing.T) {
+	logLevel = "info"
+	origLogLevel := logLevel
+	defer func() { logLevel = origLogLevel }()
+
+	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte("created"))
+	}))
+
+	req := httptest.NewRequest("POST", "/api/photos", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("Expected status 201, got %d", rec.Code)
+	}
+	if rec.Body.String() != "created" {
+		t.Errorf("Expected body 'created', got '%s'", rec.Body.String())
+	}
+}

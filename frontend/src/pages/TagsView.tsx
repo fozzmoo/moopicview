@@ -9,6 +9,7 @@ export default function TagsView() {
   const [tags, setTags] = useState<any[]>([]);
   const [filteredTags, setFilteredTags] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'count'>('name');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -31,15 +32,19 @@ export default function TagsView() {
   }, []);
 
   useEffect(() => {
-    if (searchQuery.trim() === '') {
-      setFilteredTags(tags);
-    } else {
+    let result = tags;
+    if (searchQuery.trim() !== '') {
       const query = searchQuery.toLowerCase();
-      setFilteredTags(
-        tags.filter(tag => tag.name.toLowerCase().includes(query))
-      );
+      result = tags.filter(tag => tag.name.toLowerCase().includes(query));
     }
-  }, [searchQuery, tags]);
+    result = [...result].sort((a, b) => {
+      if (sortBy === 'name') {
+        return a.name.localeCompare(b.name);
+      }
+      return b.photo_count - a.photo_count;
+    });
+    setFilteredTags(result);
+  }, [searchQuery, tags, sortBy]);
 
   if (loading) {
     return (
@@ -82,9 +87,9 @@ export default function TagsView() {
           </p>
         </div>
 
-        {/* Search */}
-        <div className="mb-6">
-          <div className="relative">
+        {/* Search & Sort */}
+        <div className="mb-6 flex flex-col sm:flex-row gap-4">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
               type="text"
@@ -93,6 +98,29 @@ export default function TagsView() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2 border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring"
             />
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Sort by:</span>
+            <button
+              onClick={() => setSortBy('name')}
+              className={`px-3 py-1 rounded-md transition-colors ${
+                sortBy === 'name'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+              }`}
+            >
+              Tag name
+            </button>
+            <button
+              onClick={() => setSortBy('count')}
+              className={`px-3 py-1 rounded-md transition-colors ${
+                sortBy === 'count'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+              }`}
+            >
+              Image count
+            </button>
           </div>
         </div>
 
@@ -112,6 +140,9 @@ export default function TagsView() {
                     <Tag className="h-8 w-8 text-primary flex-shrink-0" />
                     <div className="min-w-0">
                       <p className="font-medium truncate">{tag.name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        ({tag.photo_count} {tag.photo_count === 1 ? 'image' : 'images'})
+                      </p>
                     </div>
                   </CardContent>
                 </Card>

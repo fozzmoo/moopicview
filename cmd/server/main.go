@@ -37,6 +37,7 @@ import (
 
 var cliMode = false
 var jwtSecret = []byte("supersecret123changeinprod")
+var logLevel = "info"
 var p = bluemonday.UGCPolicy()
 
 // sanitizeHTML sanitizes user input to prevent XSS and SQL injection
@@ -124,6 +125,37 @@ var getDBURL = func() string {
 		return "postgres://moopicview:moopicview123@localhost:5432/moopicview?sslmode=disable"
 	}
 	return "postgres://moopicview:moopicview123@db:5432/moopicview?sslmode=disable"
+}
+
+// loggingMiddleware logs HTTP requests. At "info" level logs method, path, and status.
+// At "debug" level also logs response duration and client IP.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rw, r)
+
+		if logLevel == "debug" {
+			log.Printf("%s %s %d %s %s", r.Method, r.URL.Path, rw.statusCode, time.Since(start).Round(time.Millisecond), r.RemoteAddr)
+		} else {
+			log.Printf("%s %s %d", r.Method, r.URL.Path, rw.statusCode)
+		}
+	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // isAdminMiddleware checks if the requesting user is an admin
@@ -269,6 +301,10 @@ func main() {
 		port = ":8080"
 	}
 
+	if lvl := os.Getenv("LOG_LEVEL"); lvl == "debug" || lvl == "info" {
+		logLevel = lvl
+	}
+
 	r := mux.NewRouter()
 
 	// Public API routes (no auth required)
@@ -357,7 +393,7 @@ func main() {
 	c.Start()
 	defer c.Stop()
 
-	log.Fatal(http.ListenAndServe(port, r))
+	log.Fatal(http.ListenAndServe(port, loggingMiddleware(r)))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +457,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	log.Printf("User logged in: %s", creds.Email)
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -433,6 +470,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "logged out"})
+	log.Printf("User logged out")
 }
 
 func googleAuthHandler(w http.ResponseWriter, r *http.Request) {
@@ -577,6 +615,7 @@ func googleAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to collections page
 	http.Redirect(w, r, "/collections", http.StatusFound)
+	log.Printf("User logged in via Google: %s", userInfo.Email)
 }
 
 // sendEmail sends an email using SMTP with SSL/TLS
